@@ -35,6 +35,7 @@ usermanual = \
 # IMPORTS
 
 import os
+import errno
 import sys
 from cl_interface import *
 from csfmri_exceptions import *
@@ -57,6 +58,20 @@ class InputDescriptorObj:
         self.forcedmode = forcedmode
 
 
+# Source: https://stackoverflow.com/questions/600268/
+# mkdir-p-functionality-in-python
+def mkdir_p(path):
+    """Creates directories along the entire specified path. The existing
+    directory exception is suppressed."""
+    try:
+        os.makedirs(path)
+    except OSError as exc:
+        if exc.errno == errno.EEXIST and os.path.isdir(path):
+            pass
+        else:
+            raise
+
+
 def CreateBIDSDirectories(subjects, dirs=DEFAULT_DIRS, interactive=False,
                           force=False):
     """Creates the specified BIDS (Brain Imaging Data Structure) directories at
@@ -72,6 +87,13 @@ def CreateBIDSDirectories(subjects, dirs=DEFAULT_DIRS, interactive=False,
     if not (type(subjects) is list):
         subjects = [subjects]
 
+    # Discard duplicates among subjects
+    subjects_filtered = list(set(subjects))
+
+    if len(subjects) != len(subjects_filtered):
+        print ("WARNING: {} subject folder(s) were discarded."
+               .format(len(subjects)-len(subjects_filtered)))
+
     for subject_dir in subjects:
         # Make sure that the source (subject) directory exists, so that further
         # sub-directories can be created.
@@ -81,7 +103,7 @@ def CreateBIDSDirectories(subjects, dirs=DEFAULT_DIRS, interactive=False,
                        "to create it now? (y/n): ".format(subject_dir))
                 if confirmed_to_proceed():
                     try:
-                        os.mkdir(subject_dir)
+                        mkdir_p(subject_dir)
                         print ("Subject directory '{}' was successfully "
                                "created.".format(subject_dir))
                     except:
@@ -106,7 +128,7 @@ def CreateBIDSDirectories(subjects, dirs=DEFAULT_DIRS, interactive=False,
                                                 .format(subject_dir))
             else:
                 try:
-                    os.mkdir(subject_dir)
+                    mkdir_p(subject_dir)
                     print ("Subject directory '{}' was successfully created."
                            .format(subject_dir))
                 except:
@@ -121,7 +143,7 @@ def CreateBIDSDirectories(subjects, dirs=DEFAULT_DIRS, interactive=False,
                                                  .format(subject_dir))
 
         # Create directories
-        dirs = set(dirs)    # avoid duplicates
+        dirs = set(dirs)    # avoid duplicates among BIDS directories
         current_dir = os.getcwd()
         os.chdir(subject_dir)
         for dirname in dirs:
@@ -130,13 +152,13 @@ def CreateBIDSDirectories(subjects, dirs=DEFAULT_DIRS, interactive=False,
                     print ("CONFIRM: Creating '{}': "
                            .format(os.path.join(subject_dir, dirname)))
                     if confirmed_to_proceed(forceanswer=False):
-                        os.mkdir(dirname)
+                        mkdir_p(dirname)
                     else:
                         print ("WARNING: '{}' was not created."
                                .format(os.path.join(subject_dir, dirname)))
                         continue
                 else:
-                    os.mkdir(dirname)
+                    mkdir_p(dirname)
             except:
                 if force:
                     err = err + 1
