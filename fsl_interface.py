@@ -15,15 +15,25 @@
 # Date: 2017-Jul-30                                                            #
 ################################################################################
 
+# DESCRIPTION
+
 """This Python module provides Python wrappers for the command-line tools of
 FSL. Please note that only part of the full functionality of FSL is covered yet.
 """
 
+
+# IMPORTS
+
 import os
 from cl_interface import confirmed_to_proceed
+from csfmri_exceptions import *
+
+
+#  DEFINITIONS AND CODE
 
 def get_fsldir():
-    """Returns the path to the FSL installation directory (from $FSLDIR)."""
+    """Returns the path to the FSL installation directory (from $FSLDIR). When
+    FSL cannot be found, NoFSLException is raised."""
     fsldir = os.environ['FSLDIR']
     while not os.path.isdir(fsldir):
         print ("FSL is not installed or $FSLDIR variable is set incorrectly.")
@@ -31,5 +41,5 @@ def get_fsldir():
         if confirmed_to_proceed():
             fsldir = raw_input("FSLDIR=").lower()
         else:
-            exit(1)
+            raise NoFSLException("FSL could not be located on the computer.")
     return fsldir
