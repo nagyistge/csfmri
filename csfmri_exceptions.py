@@ -20,6 +20,10 @@
 """
 
 
+class NoFSLException(Exception):
+    """This exception is raised when no FSL installation can be located on the
+    system."""
+
 class GenericIOException(Exception):
     """This exception is raised in all cases when reading from or writing to
     the disk is unsuccessful."""
