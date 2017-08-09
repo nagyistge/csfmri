@@ -26,7 +26,7 @@ FSL. Please note that only part of the full functionality of FSL is covered yet.
 
 import os
 from cl_interface import confirmed_to_proceed
-from csfmri_exceptions import *
+from csfmri_exceptions import NoFSLException
 
 
 #  DEFINITIONS AND CODE
@@ -42,4 +42,28 @@ def get_fsldir():
             fsldir = raw_input("FSLDIR=").lower()
         else:
             raise NoFSLException("FSL could not be located on the computer.")
-    return fsldir
+    else:
+        # Check if the necessary FSL are really there
+        components = {"bet", "fsl_prepare_fieldmap", "fsleyes", "feat",
+                      "fsl_anat", "fslsplit", "fslmaths", "fslmerge", "invwarp",
+                      "applywarp", "fslchfiletype", "fslcpgeom", "fslroi",
+                      "flirt", "mcflirt", "applyxfm4D"}
+        if check_fsl_components(fsldir, components):
+            return fsldir
+        else:
+            raise NoFSLException("At least one required FSL tool could not "
+                                 "be located on the computer.")
+
+
+def check_fsl_components(fsldir, components="fsl", bindir="bin"):
+    """Checks whether the requested FSL tools can be found in the FSL
+    installation directory."""
+    if type(components) != set:
+        components = set(components)
+    tool_exists = [os.path.isfile(os.path.join(fsldir, bindir, comp))
+                   for comp in components]
+    if all(tool_exists):
+        return True
+    else:
+        return False
+

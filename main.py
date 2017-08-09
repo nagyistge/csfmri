@@ -160,7 +160,7 @@ def config_file_parser(config_file_path):
         with open(config_file_path, mode="r") as f:
             lines = f.readlines()
     except:
-        raise IOError("Configuration file could not be opened from "
+        raise IOError("ERROR: Configuration file could not be opened from "
                       "'{}'.".format(config_file_path))
 
     # Remove blank lines
@@ -237,6 +237,24 @@ def config_file_parser(config_file_path):
             raise TypeMismatchException("Invalid input for argument {}"
                                         .format(CLFLAGS[key]))
 
+    # Just like in parse_arguments, count the inputs and validate the integrity
+    # of input counts here.
+    excluded_keys = {"bids_dirs", "copy", "auto", "verbose", "config"}
+    keycounts = {key: len(args[key]) for key in CLFLAGS.keys()
+                 if (key not in excluded_keys)
+                 and (args[key] is not None)}
+    inputcount = max(keycounts.values())
+    if len(set(keycounts.values())) != 1:
+        print ("WARNING: The number of inputs is not the same for all "
+               "arguments. This might result in different operations being "
+               "performed on consecutive inputs. If the inequality is due "
+               "to a missing input, the results will likely be corrupted "
+               "after the missing input.")
+        # DO NOT TERMINATE. The user might have wanted to perform different
+        # operations that needed different inputs.
+    else:
+        args['inputcount'] = inputcount
+
     return args
 
 
@@ -252,6 +270,9 @@ def parse_arguments():
         if argexist(CLFLAGS['config'], True):
             # If the config argument is set, discard all other arguments
             args['config'] = subarg(CLFLAGS['config'])
+            # Except for -auto, that is necessary to bypass the first
+            # user confirmation
+            args['auto'] = argexist(CLFLAGS['auto'])
             return args
         else:
             raise MissingArgumentException("Missing path for config file.")
@@ -315,20 +336,21 @@ def parse_arguments():
     for key in BOOL_ARGS:
         args[key] = argexist(CLFLAGS[key])
 
-    # Check if the input counts match and add the number of inputs to the
-    # argument dictionary. Note that boolean arguments are excluded from this
-    # verification, as well as the list of BIDS directories that should be
-    # created, as these are fixed options for all inputs.
-    # Excluding the None-valued arguments doesn't provide error checking for
-    # non-set compulsory arguments. These must be tested in the task selector.
-    inputcount = set([len(args[key]) for key in args.keys()
-                      if (key not in {"bids_dirs", "copy", "auto", "verbose"})
-                      and (args[key] is not None)])
-    if inputcount != 1:
-        print ("The number of inputs must be the same for all arguments.")
-        exit(1)
+    # Count the input
+    excluded_keys = {"bids_dirs", "copy", "auto", "verbose", "config"}
+    keycounts = {key: len(args[key]) for key in CLFLAGS.keys()
+                 if (key not in excluded_keys)
+                 and (args[key] is not None)}
+    inputcount = max(keycounts.values())
+    if len(set(keycounts.values())) != 1:
+        print ("WARNING: The number of inputs is not the same for all "
+               "arguments. This might result in different operations being "
+               "performed on consecutive inputs. If the inequality is due "
+               "to a missing input, the results will likely be corrupted "
+               "after the missing input.")
+        # DO NOT TERMINATE. The user might have wanted to perform different
+        # operations that needed different inputs.
     else:
-        inputcount = inputcount.pop()
         args['inputcount'] = inputcount
 
     # Add default values for all unspecified arguments.
@@ -336,15 +358,16 @@ def parse_arguments():
     # against the user's intent.
     # SPECIAL BEHAVIOUR:
     #   bids_dirs: explicit argument (must be mentioned even to be set to def.)
-    if (key in ARG_DEFAULTS.keys()) and (key not in EXPLICIT_ARGS):
-        if args[key] is None:
-            args[key] = ARG_DEFAULTS[key] * inputcount
+    for key in ARG_DEFAULTS.keys():
+        if key not in EXPLICIT_ARGS:
+            if args[key] is None:
+                args[key] = ARG_DEFAULTS[key] * inputcount
 
     return args
 
 
 def check_requirements(requirements, args_dictionary):
-    if all([args_dictionary[req] for req in requirements]):
+    if all([bool(args_dictionary[req]) for req in requirements]):
         return True
     else:
         return False
@@ -377,15 +400,6 @@ def task_selector(args):
     # precedence.
     if tasks['load_field_map']:
         tasks['create_field_map'] = False
-
-    # Copy field map to the respective BIDS directory
-    # If the field map is loaded from an existing file, copy must be stated
-    # explicitly. When the field map is newly created, it will be automatically
-    # copied to the standard location.
-    reqs = [{"id", "fmap", "copy"},
-            {"id", "fmag", "fphase", "echodiff", "fractint"}]
-    tasks['copy_field_map_to_bids'] = check_requirements(reqs[0], args) or \
-                                      check_requirements(reqs[1], args)
 
     # Copy structural scan to the respective BIDS directory
     reqs = {"id", "struct", "copy"}
@@ -474,36 +488,147 @@ def task_selector(args):
 
 def summarize(args):
     """Sub-routine for printing the summary on the screen."""
+
+    # For the following code segment, it is important to understand the data
+    # structure being dealt with.
+    #   1. Multiple config files can be imported from the command line
+    #      (or a config file).
+    #   2. A config file can import exactly one set of arguments.
+    #   3. Using the command line, exactly one set of arguments can be set at
+    #      once.
+    #   4. A set of arguments may contain more than one value for each argument.
+    #      If there are more than one entries for an argument, they are treated
+    #      as separate inputs, as if the program was run multiple times with
+    #      different singular inputs. The inputs are matched, i.e. two inputs in
+    #      the different argument listings correspond to each other if they
+    #      share the same index. Two two exceptions are: config and bids_dirs.
+    #      When 'config' is specified, all other arguments are discarded from
+    #      the command, except for 'auto'. Bids_dirs: since it is plural even
+    #      when other arguments are singular, the entry for 'bids_dirs'
+    #      universally applies for all lines of input in any set of arguments.
+    #
+    # For the above reasons, the parse_args and config_file_parser sub-routines
+    # export lists for every single argument value.
+
+    # CREATE LIST WITH SETS OF ARGUMENTS (arg_sets)
+    # If the program is executed with the 'config' argument set, parse the
+    # configuration files to retrieve a set of arguments per config file.
     if args['config']:
-        msg = ("Operations will be performed according to the following "
-               "configuration files:")
-        print msg
-        print "".join(['='] * len(msg)), "\n"
-        print "\n".join(args['config'])
-
-        tasks = []
-        for config_file in args['config']:
+        # Explicit looping must be used instead of an elegant list
+        # comprehension, because exceptions must be handled.
+        arg_sets = []
+        for _, config_file in enumerate(args['config']):
             try:
-                tasks.append(task_selector(config_file_parser(config_file)))
-            except:
-                print ("ERROR in {}".format(config_file))
-                raise
-    else:
-        # Based on the input, decide what to do.
-        tasks = [task_selector(args)]
-        if not args['auto']:
-            msg = ("The following operations ({}) will be performed:"
-                   .format(args['inputcount']))
-            print msg
-            print "".join(['='] * len(msg)), "\n"
-            for i in range(args['inputcount']):
-                print ("Subject directory: {}".format(args['id'][i]))
-                print "\n".join([str(k) for (k,v) in tasks.iteritems() if v])
+                arg_sets.append(config_file_parser(config_file))
+            except IOError as exc:
+                # Show error if any of the configuration files cannot be opened.
+                # Skip the file and move on to the next one.
+                print exc.message
+                continue
         else:
-            # No summary when Interactive Mode is off.
-            pass
+            # Handling the case when all inputs were invalid
+            if not arg_sets:
+                raise NothingToDoException("No valid input was specified.")
 
-    return tasks
+    # If the program was executed with command-line arguments, there is only a
+    # single set of arguments.
+    else:
+        # A list with one entry: a dictionary with list values
+        arg_sets = [parse_arguments()]
+
+    # BREAK DOWN EVERY SET OF ARGUMENTS INTO DICTIONARIES OF CORRESPONDING
+    # SINGULAR ARGUMENTS (whose values are not lists anymore)
+
+    # Initialise "the great big pool": a list of dictionaries
+    corresponding_args_list = []
+
+    for _, arg_set in enumerate(arg_sets):  # note the singular and the plural!
+
+        # DETERMINE THE MAXIMUM NUMBER OF INPUTS FOR THE CURRENT SET OF
+        # ARGUMENTS
+        # Note that boolean arguments are excluded from this verification, as
+        # well as the list of BIDS directories that should be created, as these
+        # are fixed options for all inputs. As long as the config argument
+        # overrides everything (except for the auto), it is a redundancy, but
+        # the config argument was excluded here as well. Excluding the
+        # None-valued arguments doesn't provide error checking for non-set
+        # compulsory arguments. These must be tested by task_selector.
+        excluded_keys = {"bids_dirs", "copy", "auto", "verbose", "config"}
+        keycounts = {key: len(arg_set[key]) for key in CLFLAGS.keys()
+                     if (key not in excluded_keys)
+                     and (arg_set[key] is not None)}
+        if len(set(keycounts.values())) != 1:
+            print ("WARNING: The number of inputs is not the same for all "
+                   "arguments. This might result in different operations being "
+                   "performed on consecutive inputs. If the inequality is due "
+                   "to a missing input, the results will likely be corrupted "
+                   "after the missing input.")
+            # DO NOT TERMINATE. The user might have wanted to perform different
+            # operations that needed different inputs.
+        inputcount = max(keycounts.values())
+
+        # DO THE SEPARATION
+        # Extract individual values from arguments, whose values are still
+        # lists. Do this the required number of times and in the mean time
+        # add every new dictionary of corresponding singular arguments to
+        # the great big pool.
+        for i in range(inputcount):
+            # Create a copy to transfer the universal argument values
+            current_corresponding_args = arg_set.copy()
+
+
+            # Equate the length of different argument value listings by adding
+            # None-s.
+            for key in current_corresponding_args.keys():
+                if (type(current_corresponding_args[key]) is list) and \
+                        (len(current_corresponding_args[key]) == 1):
+                    current_corresponding_args[key] = \
+                        current_corresponding_args[key][0]
+                if key not in excluded_keys:
+                    if type(current_corresponding_args[key]) is list:
+                        while len(current_corresponding_args[key]) < inputcount:
+                            current_corresponding_args[key].append(None)
+
+            # Extract the corresponding singular arguments using list
+            # comprehension and add it to the great big pool of dictionaries of
+            # corresponding arguments. IMPORTANT: keep the singular values as
+            # lists to create compatibility with list-valued arguments
+            # (bids_dirs).
+            for key in current_corresponding_args.keys():
+                if key not in excluded_keys:
+                    if type(current_corresponding_args[key]) is list:
+                        current_corresponding_args[key] = \
+                            current_corresponding_args[key][i]
+            corresponding_args_list.append(current_corresponding_args)
+
+    # CREATE LIST OF TASK LISTS (corresponding to the dictionaries in args_list)
+    print corresponding_args_list
+    tasks_list = [task_selector(corresponding_args)
+                 for _, corresponding_args
+                 in enumerate(corresponding_args_list)]
+
+
+    # DISPLAY SUMMARY IN INTERACTIVE MODE
+    if args['auto']:
+        # Display nothing when Interactive Mode is switched off
+        pass
+    else:
+        # HEADER
+        msg = "List of all operations ({}) waiting to be performed:"\
+              .format(len(corresponding_args_list))
+        print msg
+        print "".join(['='] * len(msg))
+
+        # BODY
+        inputkey = "id"
+        # inputkey = max(keycounts.iterkeys(), key=lambda k: keycounts[k])
+        for i, corresponding_args in enumerate(corresponding_args_list):
+            corresponding_args['inputkey'] = str(inputkey)
+            print "Input:", corresponding_args[inputkey]
+            print "\t" + "\n\t".join([key for key in tasks_list[i]
+                                      if tasks_list[i][key]])
+
+    return corresponding_args_list, tasks_list
 
 
 def main():
@@ -523,19 +648,45 @@ def main():
 
     # II. Summarize task and ask for user confirmation
     try:
-        tasks_list = summarize(args)
-        if not confirmed_to_proceed("Would you like to proceed? (y/n): "):
-            exit(1)
+        args_list, tasks_list = summarize(args)
+        # Bypass user confirmation when Interactive Mode is off.
+        if not args['auto']:
+            if not confirmed_to_proceed("\n{} operation(s) will be performed. "
+                                        "Would you like to proceed? (y/n): "
+                                        .format(len(args_list))):
+                exit(1)
     except:
         # TODO: Placeholder for proper exception handling
+        # This captures the NothingToDoException.
         raise
 
     # III. Perform steps
     # TODO: This is all-linear processing. Could be paralellised.
-    for tasks in tasks_list:
-        tasks = [str(task) for (task, val) in tasks.iteritems() if val]
+    for i, tasks in enumerate(tasks_list):
+        current_args = args_list[i]
+        # Convert relative paths to absolute paths. Use the current working
+        # directory as a reference.
+        current_args = csfmri_tasks.absolutise_paths(current_args)
+        # Extract the subject label from sebjectID, since the latter was
+        # allowed to be specified as a path
+        current_args['label'] = csfmri_tasks.extract_subject_label(current_args)
+        # Perform the current set of tasks by executing one after the other. In
+        # case of an exception, try to continue the work as long as possible.
+
+        # Just for debugging:
+        print current_args
         for _, task in enumerate(tasks):
-            getattr(csfmri_tasks, task)(args)
+            # If the task execution value is True, run the task
+            if tasks[task]:
+                try:
+                    getattr(csfmri_tasks, task)(current_args)
+                except:
+                    # TODO: Add proper exception handling
+                    csfmri_tasks._status("ERROR while performing task {} on input "
+                                         "No. {} ('{}')".format(str(task), i,
+                                         current_args[current_args['inputkey']]),
+                                         current_args)
+                    continue
 
     # IV. Create output
 

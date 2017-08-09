@@ -41,7 +41,8 @@ class CountsMismatchException(Exception):
     incompatible counts."""
 
 class MissingArgumentException(Exception):
-    """This exception is raised when a compulsory argument is not set."""
+    """This exception is raised when a compulsory argument is not set or a
+    necessary subargument is not given."""
 
 class UnsupportedFormatException(Exception):
     """This exception is raised when a file (usually an input) has a format
@@ -50,3 +51,11 @@ class UnsupportedFormatException(Exception):
 class NothingToDoException(Exception):
     """This exception is raised when an expected piece of data (usually input
     file path) is missing and therefore there is nothing to do."""
+
+class NothingDoneException(Exception):
+    """This exception is raised when an expected operation could not be
+    performed and therefore the results of it will not be available."""
+
+class NIFTIException(Exception):
+    """This exception is raised when an image manipulation cannot be carried
+    out because the NIfTI data is inaccessible, corrupted or incompatible."""
