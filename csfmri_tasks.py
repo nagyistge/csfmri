@@ -283,6 +283,9 @@ def _copy(source, dest, args, key=None, description="file", msg_notfound=None,
         msg_failure = "The {} could not be copied from {} to {}"\
                       .format(str(description).lower(), source, dest)
 
+    # Update status
+    _status("Copying the {}...".format(str(description).lower()), args)
+
     # Check if the source file exists
     if not os.path.isfile(source):
         _status(msg_notfound, args)
@@ -321,7 +324,8 @@ def load_fsl(args):
     """Adds the FSL installation path to the program arguments dictionary."""
     try:
         args['fsldir'] = get_fsldir()
-        _status("FSL installation found at '{}'".format(args['fsldir']), args)
+        _status("FSL installation was found at '{}'".format(args['fsldir']),
+                args)
     except NoFSLException as exc:
         _status(exc.message + " Please (re)install FSL before using this "
                               "program.", args)
@@ -382,6 +386,8 @@ def create_bids_dirs(args):
             # FIXME: Add exception handling
             _status("ERROR: The directory '{}' could not be created."
                     .format(os.path.join(args['id'], dirname)), args)
+    else:
+        _status("The BIDS directory tree was successfully created.", args)
 
 
 def create_field_map(args):
@@ -479,30 +485,38 @@ def load_field_map(args):
         else:
             # Specify target directory (this is a built-in constant)
             targetdir = os.path.join(args['id'], FMAP_DIR)
-            # Check if the standard BIDS directory exists
-            try:
-                _secure_path(targetdir, args)
-            except GenericIOException:
-                targetdir = args['id']
-                _status("Field map will be copied from '{}' to the subject "
-                        "directory: '{}'".format(args['fmap'], targetdir), args)
-
-            try:
-                # Copy the file
-                new_fmap = os.path.join(targetdir, args['label'] + FMAP_TAG)
-                shutil.copy(args['fmap'], new_fmap)
-                _status("The field map was successfully copied from {} to {}."
-                        .format(args['fmap'], new_fmap), args)
-
-                # Update the field map information in the program argument
-                # dictionary
+            new_fmap = os.path.join(targetdir, args['label'] + FMAP_TAG)
+            if os.path.samefile(args['fmap'], new_fmap):
+                _status("Field map was loaded from {}".format(args['fmap']),
+                        args)
                 args['fmap'] = new_fmap
                 _status("Path to field map was set to {}".format(args['fmap']),
                         args)
-            except:
-                # FIXME: Add exception handling
-                _status("The field map could not be copied from {} to {}."
-                        .format(args['fmap'], new_fmap), args)
+            else:
+                # Check if the standard BIDS directory exists
+                try:
+                    _secure_path(targetdir, args)
+                except GenericIOException:
+                    targetdir = args['id']
+                    _status("Field map will be copied from '{}' to the subject "
+                            "directory: '{}'".format(args['fmap'], targetdir),
+                            args)
+
+                try:
+                    # Copy the file
+                    shutil.copy(args['fmap'], new_fmap)
+                    _status("The field map was successfully copied from {} to "
+                            "{}.".format(args['fmap'], new_fmap), args)
+
+                    # Update the field map information in the program argument
+                    # dictionary
+                    args['fmap'] = new_fmap
+                    _status("Path to field map was set to {}"
+                            .format(args['fmap']), args)
+                except:
+                    # FIXME: Add exception handling
+                    _status("The field map could not be copied from {} to {}."
+                            .format(args['fmap'], new_fmap), args)
 
 
 def copy_structural_to_bids(args):
@@ -515,6 +529,7 @@ def copy_structural_to_bids(args):
         # Stay idle if the copy argument was indeed set but set to False.
         pass
     else:
+
         # Specify target directory (this is a built-in constant)
         targetdir = os.path.join(args['id'], ANAT_DIR)
         # Check if the file given by the argument indeed exists
@@ -700,9 +715,9 @@ def _pad(imgpath, n_slices=2):
     hdr.set_data_shape(img_shape)
     # Manipulate image content
     img = img.get_data()
-    zeroslices = np.repeat(
-        np.zeros_like(img[:, :, 0, :])[:, :, np.newaxis, :],
-        repeats=N_PAD_SLICES, axis=2)
+    zero_shape = img_shape
+    zero_shape[2] = 2
+    zeroslices = np.zeros(img_shape)
     # Use the dask library for parallel array concatenation
     img = da.concatenate([zeroslices, img, zeroslices], axis=2)
 
@@ -718,7 +733,7 @@ def pad_single_echo(args):
     # Single-echo functional image
     _status("Padding single-echo functional image with {} zero-slices on both "
             "ends along the z axis...".format(N_PAD_SLICES), args)
-    if not args['sigle_echo']:
+    if not args['single_echo']:
         msg = "ERROR: Single-echo functional image was not specified."
         _status(msg, args)
         raise NotFoundException(msg)
@@ -843,14 +858,32 @@ def run_fsl_anat(args):
                    os.path.join(args['id'], STRUCT_BASE_NAME)]
         try:
             _run(anatcmd, args, bg=False)
+            # Update the fsl_anat directory information in the program argument
+            # dictionary
+            new_anat = os.path.join(args['id'], STRUCT_BASE_NAME +
+                                           ".anat")
+            if os.path.isdir(new_anat):
+                args['anatdir'] = new_anat
+                _status("Path to the .anat directory was set to {}"
+                        .format(new_anat), args)
+            else:
+                _status("ERROR: Path to the .anat directory could not be set "
+                        "after running fsl_anat.", args)
         except NothingDoneException as exc:
             # FIXME: Add exception handling
             raise
 
 
 def load_fsl_anatdir(args):
-    print "load_fsl_anatdir"
-    pass
+    """Loads existing output directory of a previous fsl_anat session."""
+
+    if not os.path.isdir(args['anatdir']):
+        _status("The existing fsl_anat directory could not be loaded from '{}'."
+                .format(args['anatdir']), args)
+    else:
+        _status("Path to the .anat directory was set to {}"
+                .format(args['anatdir']), args)
+        pass
 
 
 def run_feat(args):
