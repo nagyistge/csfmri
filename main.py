@@ -426,13 +426,11 @@ def task_selector(args):
     # (provides compatibility with motion correction)
     reqs = {"id", "single_echo", "sref"}
     tasks['pad_single_echo'] = check_requirements(reqs, args)
-    tasks['pad_single_echo'] = False
 
     # Pad multi-echo functional image and multi-echo reference image
     # (provides compatibility with motion correction)
     reqs = {"id", "multi_echo", "mref"}
     tasks['pad_multi_echo'] = check_requirements(reqs, args)
-    tasks['pad_multi_echo'] = False
 
     # Run fsl_anat on the structural image
     reqs = {"id", "struct"}

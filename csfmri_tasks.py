@@ -1343,19 +1343,23 @@ def single_echo_analysis(args):
     _status("Coordinates of the arterial reference voxel: {}"
             .format(str(ref_coords)), args)
 
-    # Calculate phase of the dominant cardiac requency component in the
+    # Calculate phase of the dominant cardiac frequency component in the
     # reference voxel
     x, y, z = ref_coords
     ref_phase = np.fft.rfft(residuals[x, y, z, :])[dom_card_freq_index]
     phasediff_multiband = np.zeros(residuals_shape[:-1])
     for slice_no in range(residuals_shape[2]):
-        phasediff_multiband[:, :, slice_no] = (ST[slice_no] - ST[z]) / 1000.0 * \
-                                              dom_card_freq * 2*np.pi
-    phase_voxels = fft_voxels[:, dom_card_freq_index].reshape(residuals_shape[:-1])
-    phase_map = np.angle(ref_phase / phase_voxels) + phasediff_multiband
+        phasediff_multiband[:, :, slice_no] = \
+            (ST[slice_no] - ST[z]) / 1000.0 * dom_card_freq * 2*np.pi
+    #residuals_flattened = residuals[:, :, :, SS:]\
+    #    .reshape((-1, residuals_shape[-1] - SS))
+    phase_voxels = np.fft.rfft(residuals[:,:,:,SS:], axis=-1)
+    freq_index_from_zero = phase_voxels.shape[-1] - fft_voxels.shape[-1] + \
+                           dom_card_freq_index
+    phase_map = np.angle(ref_phase / phase_voxels[:,:,:,freq_index_from_zero]) \
+                + phasediff_multiband
 
-    # Account for phase roll-overs
-    # FIXME: Make this compensation universal
+    # Express phase in (-pi, pi)
     phase_map[phase_map > np.pi] = -2 * np.pi + phase_map[phase_map > np.pi]
     phase_map[phase_map < -np.pi] = 2 * np.pi + phase_map[phase_map < -np.pi]
 
