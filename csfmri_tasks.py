@@ -115,6 +115,7 @@ SBIO_TAG = "_biopac_single_echo.txt"
 MBIO_TAG = "_biopac_multi_echo.txt"
 CARDMAP_TAG = "_cardmap.nii.gz"
 RESPMAP_TAG = "_respmap.nii.gz"
+PHASEMAP_TAG = "_phasemap.nii.gz"
 
 # Other built-in constants
 # Number of zero-slices used to pad each z-end of the NIfTI volumes
@@ -1233,7 +1234,6 @@ def single_echo_analysis(args):
     # Import physiological data
     try:
         biodata = _parse_bio_file(args['sbio'], args)
-        print biodata.shape
     except:
         # TODO: Add exception handling
         raise
@@ -1262,17 +1262,18 @@ def single_echo_analysis(args):
         .reshape((-1, 1))
 
     # Run iterative GLM fitting
+    _status("Starting iterative GLM fitting...", args)
     ev = np.hstack((respiratory_signal, cardiac_signal))
     voxel_signals = residuals.reshape((-1, residuals_shape[-1]))
     voxel_signals = voxel_signals[:, SS:]
-    print ev.shape
-    print voxel_signals.shape
+    print "Design matrix:", ev.shape
+    print "Signals from all voxels:", voxel_signals.shape
     try:
-        glm = GLMObject(ev, voxel_signals, args['sfreq'], args['sfmin'],
+        glm = GLMObject(ev, voxel_signals, 1000.0/TR, args['sfmin'],
                         args['spval'], args['sconv'])\
             .fit(n_jobs_=-1, total_n_EVs=3, iterations=True, normalize=True,
                  verbose=args['verbose'])
-        fft_voxels, fft_EVs, coef_initial, coef_refined = glm
+        fft_voxels, fft_EVs, fft_freq_range, coef_initial, coef_refined = glm
         _status("SUCCESS: The iterative GLM fitting was successfully "
                 "completed.", args)
     except:
@@ -1323,8 +1324,54 @@ def single_echo_analysis(args):
         # TODO: Add exception handling
         raise
 
-    # Phase mapping
-    # This will be added later
+    # PHASE MAPPING
+    # Update status
+    _status("Starting phase mapping...", args)
+
+    # Obtain the dominant cardiac frequency
+    cardiac_spectrum = fft_EVs[:, 2]
+    respiratory_spectrum = fft_EVs[:, 1]
+    dom_card_freq_index = np.argmax(cardiac_spectrum[1:])
+    dom_card_freq = fft_freq_range[dom_card_freq_index]
+    _status("The dominant cardiac frequency is {} Hz ({}/min)."
+            .format(dom_card_freq, int(round(dom_card_freq*60))), args)
+
+    # Auto-select reference voxel
+    # FIXME: Use a brain map to ensure that the reference voxel is in the brain.
+    ref_coords = np.unravel_index(cardiac_map.argmax(), cardiac_map.shape)
+    # FIXME: An angiogram would be even more accurate here.
+    _status("Coordinates of the arterial reference voxel: {}"
+            .format(str(ref_coords)), args)
+
+    # Calculate phase of the dominant cardiac requency component in the
+    # reference voxel
+    x, y, z = ref_coords
+    ref_phase = np.fft.rfft(residuals[x, y, z, :])[dom_card_freq_index]
+    phasediff_multiband = np.zeros(residuals_shape[:-1])
+    for slice_no in range(residuals_shape[2]):
+        phasediff_multiband[:, :, slice_no] = (ST[slice_no] - ST[z]) / 1000.0 * \
+                                              dom_card_freq * 2*np.pi
+    phase_voxels = fft_voxels[:, dom_card_freq_index].reshape(residuals_shape[:-1])
+    phase_map = np.angle(ref_phase / phase_voxels) + phasediff_multiband
+
+    # Account for phase roll-overs
+    # FIXME: Make this compensation universal
+    phase_map[phase_map > np.pi] = -2 * np.pi + phase_map[phase_map > np.pi]
+    phase_map[phase_map < -np.pi] = 2 * np.pi + phase_map[phase_map < -np.pi]
+
+    # Save phase map
+    try:
+        phasemap_path = os.path.join(args['resultsdir'], args['label'] +
+                                    PHASEMAP_TAG)
+        nib.save(nib.Nifti1Image(phase_map, hdr.get_sform(), hdr),
+                 phasemap_path)
+        _status("SUCCESS: The phase map was successfully saved to '{}'."
+                .format(phasemap_path), args)
+    except:
+        _status("ERROR: The phase map could not be saved to '{}'."
+                .format(phasemap_path), args)
+        # TODO: Add exception handling
+        raise
 
 
 def prepare_multi_echo(args):

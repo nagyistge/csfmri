@@ -459,7 +459,7 @@ class GLMObject:
         # Beware that both sets of coefficients come from the last iteration.
         # This was adapted from the Matlab implementation.
         # TODO: Intentional to return the "initial" coeffs from the last iter?
-        return fft_signals, fft_EVs, coef_initial, coef_refined
+        return fft_signals, fft_EVs, fft_frequencies, coef_initial, coef_refined
 
 
 def parse_arguments():
