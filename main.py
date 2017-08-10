@@ -191,6 +191,10 @@ def config_file_parser(config_file_path):
     lines = [line for line in lines
              if (not line.startswith("#")) and (line.find("=") != -1)]
 
+
+    # Create argument dictionary from argument flags without the leading '-'
+    CLFLAGS_inverse = inv_map = {v[1:]: k for k, v in CLFLAGS.iteritems()}
+
     for line in lines:
         # Discard whitespace (space, tab)
         line = line.replace(" ", "")
@@ -199,8 +203,6 @@ def config_file_parser(config_file_path):
         # Discard in-line comment and newline character
         line = line.split("#")[0].strip()
 
-        # Create argument dictionary from argument flags without the leading '-'
-        CLFLAGS_inverse = inv_map = {v[1:]: k for k, v in CLFLAGS.iteritems()}
         # Find left-hand side of the line in arg. dict. and store value(s)
         argname = line.split("=")[0]
         argval = "=".join(line.split("=")[1:]).split(",")
@@ -232,7 +234,7 @@ def config_file_parser(config_file_path):
     # Set argument types for boolean inputs
     for key in BOOL_ARGS:
         try:
-            args[key] = [bool(str(val).title()) for val in args[key]]
+            args[key] = [eval(str(val).title()) for val in args[key]]
         except:
             raise TypeMismatchException("Invalid input for argument {}"
                                         .format(CLFLAGS[key]))
@@ -407,12 +409,12 @@ def task_selector(args):
 
     # Copy single-echo functional scan and single-echo reference image to the
     # respective BIDS directory
-    reqs = {"id", "single_echo", "sref", "copy"}
+    reqs = {"id", "single_echo", "sref", "stime", "copy"}
     tasks['copy_single_echo_to_bids'] = check_requirements(reqs, args)
 
     # Copy multi-echo functional scan and multi-echo reference image to the
     # respective BIDS directory
-    reqs = {"id", "multi_echo", "mref", "copy"}
+    reqs = {"id", "multi_echo", "mref", "mtime", "copy"}
     tasks['copy_multi_echo_to_bids'] = check_requirements(reqs, args)
 
     # Create cheating EV file
@@ -459,6 +461,14 @@ def task_selector(args):
     # NOTE: As we use FEAT for the single-echo data, I set the requirements so.
     reqs = {"sfeat"}
     tasks['load_featdir'] = check_requirements(reqs, args)
+    # If the .feat directory is available from a previous FEAT session, use that
+    # instead of running it again.
+    if tasks['load_featdir']:
+        tasks['run_feat'] = False
+
+    # Load physiological signal recordings (from BioPac)
+    tasks['load_biodata'] = check_requirements({"sbio"}, args) or \
+                            check_requirements({"mbio"}, args)
 
     # Run analysis on the single-echo data
     # Beyond the obvious input files, the analysis requires the results from
@@ -673,8 +683,10 @@ def main():
         # Perform the current set of tasks by executing one after the other. In
         # case of an exception, try to continue the work as long as possible.
 
-        # Just for debugging:
+        # Just for debugging
         print current_args
+
+        # Perform tasks
         for _, task in enumerate(tasks):
             # If the task execution value is True, run the task
             if tasks[task]:

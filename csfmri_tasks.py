@@ -48,6 +48,10 @@ import os
 from errno import EEXIST
 import shutil
 import dask.array as da
+from math import ceil
+from cardioresp_GLM import GLMObject
+import glob
+from sklearn.cluster import KMeans
 
 
 # DEFINITIONS AND CODE
@@ -73,12 +77,13 @@ TASK_ORDER = {'load_fsl': 0,                     # startup.m
               'load_fsl_anatdir': 12,            # (added extra functionality)
               'run_feat': 13,                    # (added extra functionality)
               'load_featdir': 14,                # (added extra functionality)
-              'single_echo_analysis': 15,        # Second_GLM.m,
+              'load_biodata': 15,
+              'single_echo_analysis': 16,        # Second_GLM.m,
                                                  # DualRegressionLoop.m,
                                                  # PhaseMapping.m
-              'prepare_multi_echo': 16,          # MultiEchoMoCo.m
-              'multi_echo_analysis': 17,         # MultiEchoFitAndSort.m
-             }
+              'prepare_multi_echo': 17,          # MultiEchoMoCo.m
+              'multi_echo_analysis': 18,         # MultiEchoFitAndSort.m
+              }
 
 TASK_LIST = set(TASK_ORDER.keys())
 
@@ -86,6 +91,10 @@ TASK_LIST = set(TASK_ORDER.keys())
 FMAP_DIR = "fmap"   # for field map and related images
 ANAT_DIR = "anat"   # for structural image (not the output of fsl_anat!)
 FUNC_DIR = "func"   # for the functional image(s) and reference image(s)
+MASK_DIR = "masks"  # for the eroded brain masks (single-echo analysis)
+BIO_DIR = "bio"     # for the biopac recordings
+RESULTS_DIR = "results"     # output directory for single-echo and multi-echo
+                            # analyses
 
 # Default file name tags (the prefix is the subjectID stored in args['label'])
 # FIXME: Hard coding the extension is bad practice.
@@ -96,12 +105,31 @@ FPHASE_TAG = "_fmap_phasediff.nii.gz"
 FMAG_BET_TAG = "_fmap_magnitude_brain.nii.gz"
 SECHO_TAG = "_task_rest.nii.gz"
 SREF_TAG = "_task_rest_sbref.nii.gz"
+STIME_TAG = "_single_echo_timing.txt"
 MECHO_TAG = "_task_rest_multiecho.nii.gz"
 MREF_TAG = "_task_rest_multiecho_sbref.nii.gz"
+MTIME_TAG = "_multi_echo_timing.txt"
 STRUCT_BASE_NAME = "structural"
+ERO_NAME = "ero_mask.nii.gz"
+SBIO_TAG = "_biopac_single_echo.txt"
+MBIO_TAG = "_biopac_multi_echo.txt"
+CARDMAP_TAG = "_cardmap.nii.gz"
+RESPMAP_TAG = "_respmap.nii.gz"
 
 # Other built-in constants
+# Number of zero-slices used to pad each z-end of the NIfTI volumes
 N_PAD_SLICES = 2
+# Number of consecutive erosion steps (single-echo analysis)
+N_EROSIONS = 3
+# Column order (left to right) in the physiological data file
+# 'sats' is not used, but the other three are compulsory.
+BIOFILE_COLUMN_ORDER = {'respiratory':  0,
+                        'trigger':      1,
+                        'cardiac':      2,
+                        'sats':         3}
+# Trigger pulse width
+TRIGGER_DURATION = 70   # ms
+
 
 def extract_subject_label(args):
     """Extracts the subject ID (label) from the 'id' parameter that is
@@ -214,6 +242,7 @@ def _secure_path(dirpath, args, confirm_message=None, msg_success=None,
             if confirmed_to_proceed(confirm_message):
                 try:
                     _mkdir_p(dirpath)
+                    _status(msg_success, args)
                 except:
                     _status(msg_failure, args)
                     raise GenericIOException()
@@ -226,6 +255,7 @@ def _secure_path(dirpath, args, confirm_message=None, msg_success=None,
         else:
             try:
                 _mkdir_p(dirpath)
+                _status(msg_success, args)
             except:
                 _status(msg_failure, args)
                 raise GenericIOException()
@@ -252,7 +282,8 @@ def _run(command, args, bg=False):
             raise NothingDoneException(msg)
     else:
         try:
-            procid = subprocess.Popen(command)
+            procid = subprocess.Popen(command, stdout=subprocess.PIPE,
+                                      stderr=subprocess.PIPE)
             stdout = procid.stdout.read()
             stderr = procid.stderr.read()
             _status("Command output: \n{}\nCommand errors: {}"
@@ -302,22 +333,200 @@ def _copy(source, dest, args, key=None, description="file", msg_notfound=None,
                     "'{}'".format(str(description).lower(), source, targetdir),
                     args)
 
-        # Copy the file
-        try:
-            new_dest = os.path.join(targetdir, fname)
-            shutil.copy(source, new_dest)
-            _status(msg_success, args)
+        # Avoid overwriting itself
+        new_dest = os.path.join(targetdir, fname)
+        if os.path.realpath(source) == new_dest:
+            pass
+        else:
+            # Copy the file
+            try:
+                shutil.copy2(source, new_dest)
+                _status(msg_success, args)
+            except:
+                # FIXME: Add exception handling
+                _status(msg_failure, args)
+                raise GenericIOException(msg_failure)
 
-            # Update the information about the object in the program argument
-            # dictionary
-            if key is not None:
-                args[key] = new_dest
-                _status("Path to the {} was set to {}"
-                        .format(str(description).lower(), new_dest), args)
+        # Update the information about the object in the program argument
+        # dictionary
+        if key is not None:
+            args[key] = new_dest
+            _status("Path to the {} was set to {}"
+                    .format(str(description).lower(), new_dest), args)
+
+
+def _pad(imgpath, n_slices=2):
+    """Pads NIfTI volume from both edges with n zero-slices along the z axis."""
+
+    # Load the NIfTI volume
+    img = nib.load(imgpath)
+    # Adjust header information
+    hdr = img.header
+    img_shape = list(hdr.get_data_shape())
+    img_shape[2] += 2 * n_slices
+    hdr.set_data_shape(img_shape)
+    # Manipulate image content
+    img = img.get_data()
+    zero_shape = img_shape
+    zero_shape[2] = 2
+    zeroslices = np.zeros(img_shape)
+    # Use the dask library for parallel array concatenation
+    img = da.concatenate([zeroslices, img, zeroslices], axis=2)
+
+    # Return NIfTI image
+    return nib.Nifti1Image(img, hdr.get_sform(), hdr)
+
+
+def _parse_timing_file(timing_file, args):
+    """Returns a dictionary filled with the timing information stored in a
+    timing descriptor file. The values of the dictionary are float, bool or
+    numpy array, respectively."""
+
+    # Update status
+    _status("Parsing timing descriptor file at '{}'...".format(timing_file),
+            args)
+
+    if not os.path.isfile(timing_file):
+        msg = "ERROR: The provided timing descriptor file does not exist."
+        _status(msg, args)
+        raise NothingDoneException(msg)
+    else:
+        # Read all lines
+        try:
+            with open(timing_file, mode="r") as f:
+                lines = f.readlines()
         except:
-            # FIXME: Add exception handling
-            _status(msg_failure, args)
-            raise GenericIOException(msg_failure)
+            raise IOError("ERROR: Timing descriptor file could not be opened "
+                          "from '{}'.".format(timing_file))
+
+        # Remove blank lines
+        lines = [line for line in lines if line]
+
+        # Concatenate lines that end with a line continuation character (\)
+        # Note that the \ character is considered as a line continuation only
+        # at the end of each line if and only if there is whitespace on both
+        # sides of it.
+        i = 0
+        while i < len(lines) - 1:
+            # Loop until the current line contains a suspect line cont. char.
+            # This is necessary for multi-line continuation.
+            while not lines[i].split("\\")[-1].strip():
+                line = lines[i].split("\\")[:-1]
+                # Check whitespace from the left
+                if line[-1].endswith((" ", "\t")):
+                    line_end = [lines[i + 1]]
+                    lines[i] = "".join(line + line_end)
+                    lines.remove(lines[i + 1])
+                else:
+                    # If no whitespace on the left, discard and move to the next
+                    # line.
+                    break
+            i += 1
+        # Discard accidental line continuation in the last line
+        lines[-1] = lines[-1].replace("\\\n", "\n")
+
+        # Discard comment lines and lines without assignment
+        lines = [line for line in lines
+                 if (not line.startswith("#")) and (line.find("=") != -1)]
+
+        # Initialise a dictionary with all timing attributes
+        timing = {"TR": None, "SS": None, "TE": None, "ST": None,
+                  "PADDED": None}
+
+        for line in lines:
+            # Discard whitespace (space, tab)
+            line = line.replace(" ", "")
+            line = line.replace("\t", "")
+
+            # Discard in-line comment and newline character
+            line = line.split("#")[0].strip()
+
+            # Import timing data into a dictionary
+            argname = line.split("=")[0]
+            argval = "=".join(line.split("=")[1:]).split(",")
+
+            if timing[argname] is not None:
+                _status("WARNING: Argument '{}' specified more than "
+                       "once. The last specification will be used."
+                       .format(argname), args)
+
+            if argval != ['']:
+                if argname == "TR":
+                    timing[argname] = [float(val) for val in argval
+                                       if val != ""]
+                    if len(timing[argname]) != 1:
+                        _status("WARNING: TR can take a single value. Only the "
+                                "first specified value was considered.", args)
+                    timing[argname] = timing[argname][0]
+                elif argname == "SS":
+                    timing[argname] = [float(val) for val in argval
+                                       if val != ""]
+                    if len(timing[argname]) != 1:
+                        _status("WARNING: SS can take a single value. Only the "
+                                "first specified value was considered.", args)
+                    timing[argname] = timing[argname][0]
+                elif argname == "TE":
+                    timing[argname] = np.array([float(val) for val in argval
+                                                if val != ""])
+                elif argname == "ST":
+                    timing[argname] = np.array([float(val) for val in argval
+                                                if val != ""])
+                elif argname == "PADDED":
+                    timing[argname] = [eval(str(val).title())
+                                       for val in argval if val != ""]
+                    if len(timing[argname]) != 1:
+                        _status("WARNING: PADDED must be either True or False. "
+                                "Only the first specified value was "
+                                "considered.", args)
+                    timing[argname] = timing[argname][0]
+                else:
+                    _status("WARNING: {} is not a valid timing parameter, "
+                            "therefore it was discarded.".format(argname), args)
+        else:
+            # Verify that all timing parameters have been set
+            if any([val is None for val in timing.values()]):
+                msg = "ERROR: Not all timing parameters were set."
+                _status(msg, args)
+                raise ValueError(msg)
+            else:
+                _status("SUCCESS: Timing descriptor file was successfully read "
+                        "from '{}'.".format(timing_file), args)
+                return timing
+
+
+def _parse_bio_file(bio_file, args, column_order=BIOFILE_COLUMN_ORDER):
+    """Reads the data from the physiological data file. Returns the data as 2D
+    numpy array, in which columns follow the order (from left to right):
+    trigger, cardiac, respiratory. The rearrangement of the columns depends on
+    the built-in constant BIOFILE_COLUMN_ORDER."""
+
+    # Update status
+    _status("Parsing physiological data file...", args)
+
+    if not os.path.isfile(bio_file):
+        msg = "The provided physiological data file at '{}' does not exist."
+        _status(msg.format(bio_file), args)
+        raise NothingDoneException(msg)
+    else:
+        try:
+            biodata = np.loadtxt(bio_file, dtype=np.float64)
+        except:
+            msg = "The physiological data file could not be read from '{}' or " \
+                  "it contains non-numeric values.".format(bio_file)
+            _status(msg, args)
+            raise GenericIOException(msg)
+
+        # Rearrange valuable columns, so that it is always in the following
+        # order from left to right: trigger, cardiac, respiratory.
+        # (This is a built-in convention.)
+        biodata = biodata[:,
+                  np.array((column_order['trigger'], column_order['cardiac'],
+                            column_order['respiratory']))]
+
+        # Update status and return re-arranged dataset
+        _status("SUCCESS: The physiological data file was successfully read "
+                "from '{}'.".format(bio_file), args)
+        return biodata
 
 
 def load_fsl(args):
@@ -396,52 +605,32 @@ def create_field_map(args):
     BIDS sub-directory (/fmap) when -copy is set."""
 
     _status("Calculating field map...", args)
-    if args['copy']:
-        # Check if the standard BIDS directory exist
-        try:
-            targetdir = os.path.join(args['id'], FMAP_DIR)
-            confirm_msg = "Would you like to create the standard directory " \
-                          "for field maps now? (y/n): "
-            _secure_path(targetdir, args, confirm_message=confirm_msg)
-        except GenericIOException:
-            targetdir = args['id']
-            _status("The field map will be saved into the subject directory: "
-                    "'{}'.".format(targetdir), args)
+    if not args['copy']:
+        pass
+    else:
+        # Specify target directory
+        targetdir = os.path.join(args['id'], FMAP_DIR)
 
         # Copy and rename the magnitude image.
+        new_fmag = os.path.join(targetdir, args['label'] + FMAG_TAG)
         try:
-            new_fmag = os.path.join(targetdir, args['label'] + FMAG_TAG)
-            shutil.copy(args['fmag'], new_fmag)
-            _status("Field map magnitude image was successfully copied from "
-                    "'{}' to '{}'.".format(args['fmag'], new_fmag), args)
-            # Update information about field map magnitude image in the program
-            # argument dictionary
-            args['fmag'] = new_fmag
-            _status("Field map magnitude image was set to '{}'."
-                    .format(args['fmag'], new_fmag), args)
+            _copy(args['fmag'], new_fmag, args, key="fmag",
+                  description="field map magnitude image")
         except:
-            # FIXME: Add exception handling
-            _status("Field map magnitude image could not be copied from '{}' "
-                    "to '{}'".format(args['fmag'], new_fmag), args)
+            # TODO: Add exception handling
+            # Try to do as much as possible, so pass.
+            # FIXME: This error might remain hidden if the second copy is
+            # successful.
+            pass
 
         # Copy and rename the phase difference image.
+        new_fphase = os.path.join(targetdir, args['label'] + FPHASE_TAG)
         try:
-            new_fphase = os.path.join(targetdir, args['label'] + FPHASE_TAG)
-            shutil.copy(args['fphase'], new_fphase)
-            _status("Field map phase difference image was successfully copied "
-                    "from '{}' to '{}'.".format(args['fphase'], new_fphase),
-                    args)
-            # Update information about field map phase difference image in the
-            # program argument dictionary
-            args['fphase'] = new_fphase
-            _status("Field map phase image was set to '{}'."
-                    .format(args['fphase'], new_fphase), args)
+            _copy(args['fphase'], new_fphase, args, key="fphase",
+                  description="field map phase difference image")
         except:
             # FIXME: Add exception handling
-            _status("Field map phase image could not be copied from '{}' "
-                    "to '{}'".format(args['fphase'], new_fphase), args)
-    else:
-        pass
+            raise
 
     # Run brain extraction on magnitude image (by calling bet from FSL)
     betcmd = [os.path.join(args['fsldir'], "bin/bet"), new_fmag,
@@ -485,38 +674,15 @@ def load_field_map(args):
         else:
             # Specify target directory (this is a built-in constant)
             targetdir = os.path.join(args['id'], FMAP_DIR)
+
+            # Copy the file
             new_fmap = os.path.join(targetdir, args['label'] + FMAP_TAG)
-            if os.path.samefile(args['fmap'], new_fmap):
-                _status("Field map was loaded from {}".format(args['fmap']),
-                        args)
-                args['fmap'] = new_fmap
-                _status("Path to field map was set to {}".format(args['fmap']),
-                        args)
-            else:
-                # Check if the standard BIDS directory exists
-                try:
-                    _secure_path(targetdir, args)
-                except GenericIOException:
-                    targetdir = args['id']
-                    _status("Field map will be copied from '{}' to the subject "
-                            "directory: '{}'".format(args['fmap'], targetdir),
-                            args)
-
-                try:
-                    # Copy the file
-                    shutil.copy(args['fmap'], new_fmap)
-                    _status("The field map was successfully copied from {} to "
-                            "{}.".format(args['fmap'], new_fmap), args)
-
-                    # Update the field map information in the program argument
-                    # dictionary
-                    args['fmap'] = new_fmap
-                    _status("Path to field map was set to {}"
-                            .format(args['fmap']), args)
-                except:
-                    # FIXME: Add exception handling
-                    _status("The field map could not be copied from {} to {}."
-                            .format(args['fmap'], new_fmap), args)
+            try:
+                _copy(args['fmap'], new_fmap, args, key="fmap",
+                      description="field map")
+            except:
+                # FIXME: Add exception handling
+                raise
 
 
 def copy_structural_to_bids(args):
@@ -529,44 +695,24 @@ def copy_structural_to_bids(args):
         # Stay idle if the copy argument was indeed set but set to False.
         pass
     else:
-
         # Specify target directory (this is a built-in constant)
         targetdir = os.path.join(args['id'], ANAT_DIR)
-        # Check if the file given by the argument indeed exists
-        if not os.path.isfile(args['struct']):
-            _status("There is no structural image at {}."
-                    .format(args['struct']), args)
-        else:
-            # Check if the standard BIDS directory exists
-            try:
-                _secure_path(targetdir, args)
-            except GenericIOException:
-                targetdir = args['id']
-                _status("Structural image will be copied from '{}' to the "
-                        "subject directory: '{}'"
-                        .format(args['struct'], targetdir), args)
 
-            # Copy the file
-            try:
-                new_struct = os.path.join(targetdir, args['label'] + ANAT_TAG)
-                shutil.copy(args['struct'], new_struct)
-                _status("The structural image was successfully copied from {} "
-                        "to {}.".format(args['fmap'], new_struct), args)
-
-                # Update the information about the location of the structural image
-                # in the program argument dictionary
-                args['struct'] = new_struct
-                _status("Structural image path was set to {}"
-                        .format(new_struct), args)
-            except:
-                # FIXME: Add exception handling
-                _status("The structural image could not be copied from {} to {}"
-                        .format(args['fmap'], new_struct), args)
+        # Copy the file
+        new_struct = os.path.join(targetdir, args['label'] + ANAT_TAG)
+        try:
+            _copy(args['struct'], new_struct, args, key="struct",
+                  description="structural image")
+        except:
+            # TODO: Add exception handling
+            # Try to do as much as possible, so ignore the failure for now.
+            raise
 
 
 def copy_single_echo_to_bids(args):
-    """Copy single-echo functional scan and single-echo reference image into the
-     respective BIDS sub-directory (/func)."""
+    """Copy single-echo functional scan, the single-echo reference image, and
+    the acquisition timing descriptor file into the respective BIDS
+    sub-directory (/func)."""
 
     # Check if the argument of 'copy' is indeed True. (Although it is impossible
     # to set it to False through the command line, the config file carries this
@@ -579,26 +725,38 @@ def copy_single_echo_to_bids(args):
         targetdir = os.path.join(args['id'], FUNC_DIR)
 
         # Copy the single-echo functional image
-        if os.path.isfile(args['single_echo']):
-            try:
-                new_secho = os.path.join(targetdir, args['label'] + SECHO_TAG)
-                _copy(args['single_echo'], new_secho, args, key='single_echo',
-                      description="single-echo functional image")
-            except:
-                # TODO: Add exception handling
-                # Try to do as much as possible, so ignore the failure for now.
-                pass
+        new_secho = os.path.join(targetdir, args['label'] + SECHO_TAG)
+        try:
+            _copy(args['single_echo'], new_secho, args, key='single_echo',
+                  description="single-echo functional image")
+        except:
+            # TODO: Add exception handling
+            # FIXME: This error might remain hidden, if the second copy is
+            # successful.
+            # Try to do as much as possible, so ignore the failure for now.
+            pass
 
         # Copy the single-echo reference image
-        if os.path.isfile(args['sref']):
-            try:
-                new_sref = os.path.join(targetdir, args['label'] + SREF_TAG)
-                _copy(args['sref'], new_sref, args, key='sref',
-                      description="single-echo reference image")
-            except:
-                # TODO: Add exception handling
-                # Try to do as much as possible, so ignore the failure for now.
-                pass
+        new_sref = os.path.join(targetdir, args['label'] + SREF_TAG)
+        try:
+            _copy(args['sref'], new_sref, args, key='sref',
+                  description="single-echo reference image")
+        except:
+            # TODO: Add exception handling
+            # Try to do as much as possible, so ignore the failure for now.
+            pass
+
+        # Copy the acquisition timing descriptor file
+        new_stime = os.path.join(targetdir, args['label'] + STIME_TAG)
+        try:
+            _copy(args['stime'], new_stime, args, key='stime',
+                  description="single-echo timing descriptor file")
+        except:
+            # TODO: Add exception handling
+            # FIXME: This error might remain hidden, if the second copy is
+            # successful.
+            # Try to do as much as possible, so ignore the failure for now.
+            raise
 
 
 def copy_multi_echo_to_bids(args):
@@ -616,26 +774,36 @@ def copy_multi_echo_to_bids(args):
         targetdir = os.path.join(args['id'], FUNC_DIR)
 
         # Copy the multi-echo functional image
-        if os.path.isfile(args['multi_echo']):
-            try:
-                new_mecho = os.path.join(targetdir, args['label'] + MECHO_TAG)
-                _copy(args['multi_echo'], new_mecho, args, key='multi_echo',
-                      description="multi-echo functional image")
-            except:
-                # TODO: Add exception handling
-                # Try to do as much as possible, so ignore the failure for now.
-                pass
+        new_mecho = os.path.join(targetdir, args['label'] + MECHO_TAG)
+        try:
+            _copy(args['multi_echo'], new_mecho, args, key='multi_echo',
+                  description="multi-echo functional image")
+        except:
+            # TODO: Add exception handling
+            # Try to do as much as possible, so ignore the failure for now.
+            pass
 
         # Copy the multi-echo reference image
-        if os.path.isfile(args['mref']):
-            try:
-                new_mref = os.path.join(targetdir, args['label'] + MREF_TAG)
-                _copy(args['mref'], new_mref, args, key='mref',
-                      description="multi-echo reference image")
-            except:
-                # TODO: Add exception handling
-                # Try to do as much as possible, so ignore the failure for now.
-                pass
+        new_mref = os.path.join(targetdir, args['label'] + MREF_TAG)
+        try:
+            _copy(args['mref'], new_mref, args, key='mref',
+                  description="multi-echo reference image")
+        except:
+            # TODO: Add exception handling
+            # Try to do as much as possible, so ignore the failure for now.
+            pass
+
+        # Copy the acquisition timing descriptor file
+        new_mtime = os.path.join(targetdir, args['label'] + MTIME_TAG)
+        try:
+            _copy(args['mtime'], new_mtime, args, key='mtime',
+                  description="multi-echo timing descriptor file")
+        except:
+            # TODO: Add exception handling
+            # FIXME: This error might remain hidden, if the second copy is
+            # successful.
+            # Try to do as much as possible, so ignore the failure for now.
+            raise
 
 
 def create_cheating_ev(args):
@@ -703,36 +871,14 @@ def create_cheating_ev(args):
             raise GenericIOException(msg)
 
 
-def _pad(imgpath, n_slices=2):
-    """Pads NIfTI volume from both edges with n zero-slices along the z axis."""
-
-    # Load the NIfTI volume
-    img = nib.load(imgpath)
-    # Adjust header information
-    hdr = img.header
-    img_shape = list(hdr.get_data_shape())
-    img_shape[2] += 2 * n_slices
-    hdr.set_data_shape(img_shape)
-    # Manipulate image content
-    img = img.get_data()
-    zero_shape = img_shape
-    zero_shape[2] = 2
-    zeroslices = np.zeros(img_shape)
-    # Use the dask library for parallel array concatenation
-    img = da.concatenate([zeroslices, img, zeroslices], axis=2)
-
-    # Return NIfTI image
-    return nib.Nifti1Image(img, hdr.get_sform(), hdr)
-
-
 def pad_single_echo(args):
     """Adds a number (N_PAD_SLICES) of zero-slices to both ends of the
     single-echo images along the z axis. This is for compatibility with the
     motion correction algorithm in the FSL."""
 
     # Single-echo functional image
-    _status("Padding single-echo functional image with {} zero-slices on both "
-            "ends along the z axis...".format(N_PAD_SLICES), args)
+    _status("Padding the single-echo functional image with {} zero-slices on "
+            "both ends along the z axis...".format(N_PAD_SLICES), args)
     if not args['single_echo']:
         msg = "ERROR: Single-echo functional image was not specified."
         _status(msg, args)
@@ -757,7 +903,7 @@ def pad_single_echo(args):
             pass
 
     # Single-echo reference image
-    _status("Padding single-echo reference image with {} zero-slices "
+    _status("Padding the single-echo reference image with {} zero-slices "
             "on both ends along the z axis...".format(N_PAD_SLICES), args)
     if not args['sref']:
         msg = "ERROR: Single-echo reference image was not specified."
@@ -789,15 +935,15 @@ def pad_multi_echo(args):
     motion correction algorithm in the FSL."""
 
     # Multi-echo functional image
-    _status("Padding multi-echo functional image with {} zero-slices on both "
-            "ends along the z axis...".format(N_PAD_SLICES), args)
+    _status("Padding the multi-echo functional image with {} zero-slices on "
+            "both ends along the z axis...".format(N_PAD_SLICES), args)
     if not args['multi_echo']:
         msg = "ERROR: Multi-echo functional image was not specified."
         _status(msg, args)
         raise NotFoundException(msg)
     else:
         padded_nifti = _pad(args['multi_echo'], n_slices=N_PAD_SLICES)
-        # Save it next to the single_echo image
+        # Save it next to the single-echo image
         # FIXME: Hard coding the extension is bad practice.
         fpath, fname = os.path.split(args['multi_echo'])
         fname = fname.replace(".nii.gz", "_padded{}.nii.gz"
@@ -815,7 +961,7 @@ def pad_multi_echo(args):
             pass
 
     # Single-echo reference image
-    _status("Padding multi-echo reference image with {} zero-slices "
+    _status("Padding the multi-echo reference image with {} zero-slices "
             "on both ends along the z axis...".format(N_PAD_SLICES), args)
     if not args['mref']:
         msg = "ERROR: Multi-echo reference image was not specified."
@@ -823,7 +969,7 @@ def pad_multi_echo(args):
         raise NotFoundException(msg)
     else:
         padded_nifti = _pad(args['mref'], n_slices=N_PAD_SLICES)
-        # Save it next to the single_echo image
+        # Save it next to the multi-echo image
         # FIXME: Hard coding the extension is bad practice.
         fpath, fname = os.path.split(args['mref'])
         fname = fname.replace(".nii.gz", "_padded{}.nii.gz"
@@ -892,13 +1038,293 @@ def run_feat(args):
 
 
 def load_featdir(args):
-    print "load_featdir"
-    pass
+    """Loads existing output directory from a previous FEAT session."""
+
+    if not os.path.isdir(args['sfeat']):
+        _status("ERROR: The provided FEAT directory does not exist.".format(args['sfeat']),
+                args)
+    else:
+        _status("SUCCESS: Path to FEAT directory was set to '{}'.".format(args['sfeat']),
+                args)
+
+
+def load_biodata(args):
+    """Loads and copies (upon request) the available physiological data files.
+    """
+
+    # Update status
+    _status("Loading physiological data...", args)
+
+    # Load biodata for the single-echo scan
+    if args['sbio']:
+        if not os.path.isfile(args['sbio']):
+            _status("The provided physiological data file at '{}' does not "
+                    "exist.".format(args['sbio']), args)
+        else:
+            if not args['copy']:
+                _status("Path to the physiological data file (single-echo "
+                        "scan) was set to '{}'".format(args['sbio']), args)
+            else:
+                targetdir = os.path.join(args['id'], BIO_DIR)
+                if not os.path.isdir(targetdir):
+                    _mkdir_p(targetdir)
+                new_sbio = os.path.join(targetdir, args['label'] + SBIO_TAG)
+
+                try:
+                    _copy(args['sbio'], new_sbio, args, key="sbio",
+                          description="physiological data file "
+                                      "(single-echo scan)")
+                except:
+                    # FIXME: Add exception handling
+                    pass
+
+    # Load biodata for the multi-echo scan
+    if args['mbio']:
+        if not os.path.isfile(args['mbio']):
+            _status("The provided physiological data file at '{}' does not "
+                    "exist.".format(args['mbio']), args)
+        else:
+            if not args['copy']:
+                _status("Path to the physiological data file (multi-echo "
+                        "scan) was set to '{}'".format(args['mbio']), args)
+            else:
+                targetdir = os.path.join(args['id'], BIO_DIR)
+                if not os.path.isdir(targetdir):
+                    _mkdir_p(targetdir)
+                new_mbio = os.path.join(targetdir, args['label'] + MBIO_TAG)
+
+                try:
+                    _copy(args['mbio'], new_mbio, args, key="mbio",
+                          description="physiological data file "
+                                      "(multi-echo scan)")
+                except:
+                    # FIXME: Add exception handling
+                    raise
 
 
 def single_echo_analysis(args):
-    print "single_echo_analysis"
-    pass
+    """The implementation of the analysis steps pertaining to the single-echo
+    data."""
+
+    # Update status
+    _status("Starting single-echo analysis...", args)
+
+    # Create BIDS sub-directory for masks
+    maskdir = os.path.join(args['id'], MASK_DIR)
+    try:
+        _mkdir_p(maskdir)
+        _status("BIDS sub-directory for masks was successfully created at "
+                "'{}'.".format(maskdir), args)
+        # Update the information of mask directory in the program argument
+        # dictionary
+        args['maskdir'] = maskdir
+    except:
+        _status("WARNING: BIDS sub-directory for masks could not be created. "
+                "Masks will be saved into the subject directory.", args)
+        args['maskdir'] = args['id']
+
+    # Erode bias-corrected brain-extracted structural image (img) and save into
+    # the BIDS directory for masks.
+    # (calls fslmaths)
+
+    #struct_base_name = os.path.split(args['anatdir'])[-1].replace(".anat", "")
+    #source_img = os.path.join(args['anatdir'], struct_base_name +
+    #                          "_biascorr_brain.nii.gz")
+    source_img = glob.glob(os.path.join(args['anatdir'],
+                                        "*_biascorr_brain.nii.gz"))[0]
+    struct_base_name = os.path.split(source_img)[-1]\
+                       .replace("_biascorr_brain.nii.gz", "")
+    if not os.path.isfile(source_img):
+        msg = "ERROR: The bias-corrected brain-extracted structural image "\
+              "was not found in the .anat directory ('{}')."\
+              .format(source_img)
+        _status(msg, args)
+        raise NotFoundException(msg)
+    else:
+        ero_img = os.path.join(args['maskdir'], ERO_NAME)
+        try:
+            _copy(source_img, ero_img, args,
+              description="bias-corrected brain-extracted structural image")
+        except:
+            raise
+        erocmd = [os.path.join(args['fsldir'], "bin/fslmaths"), ero_img,
+                  "-ero", ero_img]
+        try:
+            for _ in range(N_EROSIONS):
+                _run(erocmd, args, bg=False)
+        except:
+            raise
+
+    # Use FEAT output to warp structural images into functional space
+    # (calls fsl invwarp and applywarp)
+
+    # Calculate inverse warp
+    func = os.path.join(args['sfeat'], "reg/example_func.nii.gz")
+    func2st_warp = os.path.join(
+        args['sfeat'], "reg/example_func2highres_warp.nii.gz")
+    st2func_warp = os.path.join(
+        args['sfeat'], "reg/highres2example_func.nii.gz")
+    invwarpcmd = [os.path.join(args['fsldir'], "bin/invwarp"), "-w",
+                  func2st_warp, "-o", st2func_warp, "-r", func]
+    try:
+        _run(invwarpcmd, args, bg=False)
+    except:
+        raise
+
+    # Apply the inverted warp to the structural images in the .anat directory
+    # TODO: This could be run in parallel
+    _status("Warping structural images into functional space...", args)
+
+    for (k, v) in {struct_base_name + "_biascorr_brain.nii.gz":
+                   struct_base_name, struct_base_name + "_fast_pve_0.nii.gz":
+                   "CSF", struct_base_name + "_fast_pve_1.nii.gz": "GM",
+                   struct_base_name + "_fast_pve_2.nii.gz": "WM", ero_img:
+                   ero_img.replace(".nii.gz", "")}.iteritems():
+
+        appwcmd = [os.path.join(args['fsldir'], "bin/applywarp"),
+                   "-i", os.path.join(args['anatdir'], k),
+                   "-o", os.path.join(args['maskdir'], v + "2func.nii.gz"),
+                   "-r", func,
+                   "-w", st2func_warp]
+        try:
+            _run(appwcmd, args, bg=True)
+        except:
+            continue
+
+    # Load functional data: the residuals from the FEAT session
+    _status("Loading residuals from FEAT session...", args)
+    res_path = os.path.join(args['sfeat'], "stats/res4d.nii.gz")
+    if not os.path.isfile(res_path):
+        msg = "The 4D NIfTI image of residuals was not found at '{}'."\
+            .format(res_path)
+        _status(msg, args)
+        raise NotFoundException(msg)
+    else:
+        try:
+            residuals = nib.load(res_path)
+            hdr = residuals.header
+            residuals = np.array(residuals.get_data())
+            residuals_shape = residuals.shape
+            _status("SUCCESS: 4D NIfTI image of residuals was successfully "
+                    "loaded from '{}'.".format(res_path), args)
+        except:
+            msg = "ERROR: 4D NIfTI image of residuals could not be loaded from "\
+                  "'{}'.".format(res_path)
+            _status(msg, args)
+            raise NIFTIException(msg)
+
+    # Read acquisition timing information
+    try:
+        timing = _parse_timing_file(args['stime'], args)
+        # Introduce variables for better readibility
+        TR = timing['TR']
+        SS = int(round(timing['SS']))
+        TE = timing['TE']
+        if timing['PADDED']:
+            ST = timing['ST']
+        else:
+            ST = timing['ST']
+            ST = np.concatenate((np.repeat(ST[0], N_PAD_SLICES), ST,
+                                 np.repeat(ST[-1], N_PAD_SLICES)))
+    except:
+        # TODO: Add exception handling
+        raise
+
+    # Import physiological data
+    try:
+        biodata = _parse_bio_file(args['sbio'], args)
+        print biodata.shape
+    except:
+        # TODO: Add exception handling
+        raise
+
+    # Trim physiological data (to match scan duration) before the iterative GLM
+    # fitting. Discard first few (timing['SS']) acquisitions until steady state.
+
+    samples_per_ms = args['sfreq'] / 1000.0
+    samples_per_TR = int(round(samples_per_ms * timing['TR']))
+    trigger_threshold = np.mean(KMeans(n_clusters=2)
+                        .fit(biodata[:, 0].reshape(-1, 1)).cluster_centers_)
+    trigger_duration = TRIGGER_DURATION * samples_per_ms
+    trigger_on = np.where(biodata[:, 0] > trigger_threshold)[0]
+    ss_begins = int(ceil(np.min(trigger_on) +
+                     timing['SS'] * timing['TR'] * samples_per_ms))
+    scan_start = int(np.min(trigger_on[trigger_on > ss_begins]))
+    scan_end = int(np.max(trigger_on[trigger_on > ss_begins]) + samples_per_TR
+                   - trigger_duration)
+
+    # Sub-sample physiological data (to match TR) before the iterative GLM
+    # fitting.
+
+    cardiac_signal = biodata[scan_start:scan_end+1:samples_per_TR, 1]\
+        .reshape((-1, 1))
+    respiratory_signal = biodata[scan_start:scan_end+1:samples_per_TR, 2]\
+        .reshape((-1, 1))
+
+    # Run iterative GLM fitting
+    ev = np.hstack((respiratory_signal, cardiac_signal))
+    voxel_signals = residuals.reshape((-1, residuals_shape[-1]))
+    voxel_signals = voxel_signals[:, SS:]
+    print ev.shape
+    print voxel_signals.shape
+    try:
+        glm = GLMObject(ev, voxel_signals, args['sfreq'], args['sfmin'],
+                        args['spval'], args['sconv'])\
+            .fit(n_jobs_=-1, total_n_EVs=3, iterations=True, normalize=True,
+                 verbose=args['verbose'])
+        fft_voxels, fft_EVs, coef_initial, coef_refined = glm
+        _status("SUCCESS: The iterative GLM fitting was successfully "
+                "completed.", args)
+    except:
+        _status("ERROR in the iterative GLM fitting.", args)
+        # TODO: Add exception handling
+        raise
+
+    # Obtain respiratory and cardiac maps
+    coef_initial = coef_initial.reshape(residuals_shape[:3] +
+                                        (fft_EVs.shape[-1],))
+    respiratory_map = coef_initial[:, :, :, 1]
+    respiratory_map[respiratory_map < 0] = 0
+    cardiac_map = coef_initial[:, :, :, 2]
+    cardiac_map[cardiac_map < 0] = 0
+
+    # Save both the respiratory map and the cardiac map
+    targetdir = os.path.join(args['id'], RESULTS_DIR)
+    if not os.path.isdir(targetdir):
+        _mkdir_p(targetdir)
+    args['resultsdir'] = targetdir
+
+    brain_mask = os.path.join(args['maskdir'], struct_base_name +
+                              "2func.nii.gz")
+    hdr = nib.load(brain_mask).header
+    try:
+        cardmap_path = os.path.join(args['resultsdir'], args['label'] +
+                                    CARDMAP_TAG)
+        nib.save(nib.Nifti1Image(cardiac_map, hdr.get_sform(), hdr),
+                 cardmap_path)
+        _status("SUCCESS: The cardiac map was successfully saved to '{}'."
+                .format(cardmap_path), args)
+    except:
+        _status("ERROR: The cardiac map could not be saved to '{}'."
+                .format(cardmap_path), args)
+        # TODO: Add exception handling
+        raise
+
+    try:
+        respmap_path = os.path.join(args['resultsdir'], args['label'] +
+                                    RESPMAP_TAG)
+        nib.save(nib.Nifti1Image(respiratory_map, hdr.get_sform(), hdr),
+                 respmap_path)
+        _status("SUCCESS: The respiratory map was successfully saved to '{}'."
+                .format(respmap_path), args)
+    except:
+        _status("ERROR: The cardiac map could not be saved to '{}'."
+                .format(cardmap_path), args)
+        # TODO: Add exception handling
+        raise
+
+    # Phase mapping
+    # This will be added later
 
 
 def prepare_multi_echo(args):
