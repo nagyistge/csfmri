@@ -64,7 +64,7 @@ from scipy import stats
 # DEFINITIONS AND CODE
 
 # Command-line arguments
-# OBSOLETE !!!
+# FIXME: OBSOLETE !!!
 CLFLAGS = {'func_res': '-r',        # r(residuals)
            'freq_range': '-f',      # f(requencies)
            'signal_resp': '-l',     # l(ung)
@@ -221,12 +221,21 @@ class GLMObject:
             fft_result = np.fft.rfft(data, axis=axis_)
             fft_freq = np.fft.rfftfreq(data.shape[axis_], 1.0/sfreq)
         if fmin != 0:
+            print fft_result.shape
+            fft_result = fft_result[:, np.abs(fft_freq) > fmin]
             fft_freq = fft_freq[np.abs(fft_freq) > fmin]
-            fft_result = fft_result[np.abs(fft_freq) > fmin]
         if abs_:
             return fft_freq, np.abs(fft_result)
         else:
             return fft_freq, fft_result
+
+    @staticmethod
+    def _repair(values, nan_val=0, inf_val=0, neginf_val=0):
+        """Changes invalid values to a pre-specified numerical value."""
+        values[np.isnan(values)] = 0
+        values[np.isinf(values)] = 0
+        values[np.isneginf(values)] = 0
+        return values
 
     def fit(self, n_jobs_=-1, total_n_EVs=None, iterations=True, normalize=True,
             verbose=True):
@@ -246,9 +255,9 @@ class GLMObject:
         # TODO: Use appropriate documentation markup.
 
         # Check the format of the signal: flatten to 2D if necessary
-        signal_shape = self.__signal.shape
+        signal_shape = self.signal.shape
         if len(signal_shape) > 2:
-            self.__signal = self.__signal.reshape((-1, signal_shape[-1]))
+            self.signal = self.signal.reshape((-1, signal_shape[-1]))
 
         # Calculate Fourier spectra of each signal
         # Note: signal matrix: voxels (rows) x timepoints (columns),
@@ -256,22 +265,30 @@ class GLMObject:
         # The second computation of the FFT frequencies vector is discarded,
         # being identical to the first.
         fft_frequencies, fft_signals = GLMObject._opt_fourier(
-            self.__signal, axis_=-1, abs_=True, fmin=self.__fmin,
-            sfreq=self.__sfreq)
+            self.signal, axis_=-1, abs_=True, fmin=self.fmin,
+            sfreq=self.sfreq)
         _, fft_EVs = GLMObject._opt_fourier(
-            self.__EV, axis_=0, abs_=True, fmin=self.__fmin, sfreq=self.__sfreq)
+            self.EV.T, axis_=-1, abs_=True, fmin=self.fmin, sfreq=self.sfreq)
+        fft_EVs = fft_EVs.T
 
         # Normalize the signal spectrum and all EV spectra (fmin:Nyquist)
         if normalize:
-            fft_signals = fft_signals / np.sum(fft_signals, axis=-1)
-            fft_EVs = fft_EVs / np.sum(fft_EVs, axis=0)
+            fft_signals = fft_signals / \
+                np.repeat(np.sum(fft_signals, axis=-1)[:, np.newaxis],
+                          fft_signals.shape[-1], axis=-1)
+            fft_signals = GLMObject._repair(fft_signals)
+
+            fft_EVs = fft_EVs / \
+                      np.repeat(np.sum(fft_EVs, axis=0)[np.newaxis, :],
+                                fft_EVs.shape[0], axis=0)
+            fft_EVs = GLMObject._repair(fft_EVs)
 
         # Discard any false signals (all zero over time, like background)
         true_signal_mask = np.any(fft_signals, axis=1)
         fft_signals_nonzero = fft_signals[true_signal_mask, :]
         if verbose:
             print ("{} non-zero voxels will be used out of {}."
-                   .format(fft_signals.shape[0], fft_signals_nonzero.shape[0]))
+                   .format(fft_signals_nonzero.shape[0], fft_signals.shape[0]))
         # Assume that there is no such EVs...
         # true_EV_mask = np.any(fft_EVs, axis=0)
         # fft_EVs_nonzero = fft_EVs[:, true_EV_mask]
@@ -288,16 +305,16 @@ class GLMObject:
                 raise ValueError(
                     "GLMObject: The total number of explanatory variables has "
                     "to be an integer that is greater than or equal to the "
-                    "number of explanatory variable initially provided.")
+                    "number of explanatory variables initially provided.")
         else:
             n_missing_EVs = 0
 
         # Perform iterative fitting until the desired level of convergence is
         # reached. Initialise convergence level and iteration counter then start
         # iterations.
-        convergence = self.__clevel + 1
+        convergence = self.clevel + 1
         current_iteration = 0
-        while convergence >= self.__clevel:
+        while convergence >= self.clevel:
             # Step iteration counter.
             current_iteration += 1
             if verbose:
@@ -339,7 +356,7 @@ class GLMObject:
                 initial_glm.coef_[nan_coef_mask] = 0
 
             # Only keep coefficients that are significantly different from 0.
-            initial_glm.coef_[initial_glm.p >= self.__pval] = 0
+            initial_glm.coef_[initial_glm.p >= self.pval] = 0
 
             # Refine explanatory variables by fitting the significant
             # coefficients from the initial GLM to a given frequency component
@@ -370,7 +387,7 @@ class GLMObject:
                 spatial_glm.coef_[nan_coef_mask] = 0
 
             # Only keep coefficients that are significantly different from 0.
-            spatial_glm.coef_[spatial_glm.p >= self.__pval] = 0
+            spatial_glm.coef_[spatial_glm.p >= self.pval] = 0
 
             # Final step in each iteration: re-run the initial GLM fit using the
             # refined explanatory variables (spectra).
@@ -381,7 +398,7 @@ class GLMObject:
             # the spatial GLM build up the refined spectra. The matrix has to be
             # transposed before being used as the design matrix of the refined
             # GLM. No column of ones has to be added.
-            fft_EVs_refined = spatial_glm.coef_.T
+            fft_EVs_refined = spatial_glm.coef_    # removed T
             refined_glm = LinearRegression(n_jobs=n_jobs_)\
                 .fit(fft_EVs_refined, fft_signals_nonzero.T)
             if verbose:
@@ -400,7 +417,7 @@ class GLMObject:
                 refined_glm.coef_[nan_coef_mask] = 0
 
             # Only keep coefficients that are significantly different from 0.
-            refined_glm.coef_[initial_glm.p >= self.__pval] = 0
+            refined_glm.coef_[initial_glm.p >= self.pval] = 0
 
             # Calculate convergence after the current iteration
             convergence = np.max(np.sum(
