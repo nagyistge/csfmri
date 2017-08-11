@@ -896,6 +896,12 @@ def pad_single_echo(args):
             nib.save(padded_nifti, fname)
             _status("Padded single-echo functional image was saved to '{}'"
                     .format(fname), args)
+
+            # Update information in program argument dictionary
+            args['single_echo_pad'] = fname
+            _status("Path to the single-echo functional image was set to the "
+                    "padded image: '{}'".format(fname), args)
+
         except:
             # Supress error and try to do as many tasks as possible.
             msg = "ERROR while saving the padded single-echo functional " \
@@ -922,6 +928,11 @@ def pad_single_echo(args):
             nib.save(padded_nifti, fname)
             _status("Padded single-echo reference image was saved to '{}'"
                     .format(fname), args)
+
+            # Update information in program argument dictionary
+            args['sref_pad'] = fname
+            _status("Path to the single-echo reference image was set to the "
+                    "padded image: '{}'".format(fname), args)
         except:
             # Supress error and try to do as many tasks as possible.
             msg = "ERROR while saving the padded single-echo reference " \
@@ -954,6 +965,11 @@ def pad_multi_echo(args):
             nib.save(padded_nifti, fname)
             _status("Padded multi-echo functional image was saved to '{}'"
                     .format(fname), args)
+
+            # Update information in program argument dictionary
+            args['multi_echo_pad'] = fname
+            _status("Path to the multi-echo functional image was set to the "
+                    "padded image: '{}'".format(fname), args)
         except:
             # Supress error and try to do as many tasks as possible.
             msg = "ERROR while saving the padded multi-echo functional " \
@@ -980,6 +996,11 @@ def pad_multi_echo(args):
             nib.save(padded_nifti, fname)
             _status("Padded multi-echo reference image was saved to '{}'"
                     .format(fname), args)
+
+            # Update information in program argument dictionary
+            args['mref_pad'] = fname
+            _status("Path to the multi-echo reference image was set to the "
+                    "padded image: '{}'".format(fname), args)
         except:
             # Supress error and try to do as many tasks as possible.
             msg = "ERROR while saving the padded multi-echo reference " \
@@ -1217,7 +1238,7 @@ def single_echo_analysis(args):
     # Read acquisition timing information
     try:
         timing = _parse_timing_file(args['stime'], args)
-        # Introduce variables for better readibility
+        # Introduce variables for better readability
         TR = timing['TR']
         SS = int(round(timing['SS']))
         TE = timing['TE']
@@ -1351,8 +1372,7 @@ def single_echo_analysis(args):
     for slice_no in range(residuals_shape[2]):
         phasediff_multiband[:, :, slice_no] = \
             (ST[slice_no] - ST[z]) / 1000.0 * dom_card_freq * 2*np.pi
-    #residuals_flattened = residuals[:, :, :, SS:]\
-    #    .reshape((-1, residuals_shape[-1] - SS))
+
     phase_voxels = np.fft.rfft(residuals[:,:,:,SS:], axis=-1)
     freq_index_from_zero = phase_voxels.shape[-1] - fft_voxels.shape[-1] + \
                            dom_card_freq_index
@@ -1362,6 +1382,9 @@ def single_echo_analysis(args):
     # Express phase in (-pi, pi)
     phase_map[phase_map > np.pi] = -2 * np.pi + phase_map[phase_map > np.pi]
     phase_map[phase_map < -np.pi] = 2 * np.pi + phase_map[phase_map < -np.pi]
+
+    # Remove background
+    phase_map[np.logical_not(np.any(phase_voxels, axis=-1))] = 0
 
     # Save phase map
     try:
@@ -1377,10 +1400,118 @@ def single_echo_analysis(args):
         # TODO: Add exception handling
         raise
 
+    # Save interactive charts into the results folder
+    # TODO: This feature will be added later.
+
+    # Update status
+    _status("SUCCESS: Single-echo analysis was completed successfully.")
+
 
 def prepare_multi_echo(args):
-    print "prepare_multi_echo"
-    pass
+    """Parses the multi-echo functional image to sort the sequence of echos
+    with the same index into separate files. Runs motion correction (mcflirt) on
+    the echo files."""
+
+    # Update status
+    _status("Preparing for multi-echo analysis...", args)
+
+    # Load the multi-echo functional image (the padded)
+    if not os.path.isfile(args['multi_echo_pad']):
+        msg = "The provided padded multi-echo functional image was not found " \
+              "at '{}'.".format(args['multi_echo_pad'])
+        _status(msg, args)
+        raise NotFoundException(msg)
+    else:
+        try:
+            mimg = nib.load(args['multi_echo_pad'])
+            hdr = mimg.header
+            mimg = mimg.get_data()
+        except:
+            msg = "The padded multi-echo functional image could not be " \
+                  "loaded from '{}'.".format(args['multi_echo_pad'])
+            _status(msg, args)
+            raise GenericIOException(msg)
+
+    # Load the timing parameters for the multi-echo acquisition
+    try:
+        timing = _parse_timing_file(args['mtime'], args)
+        # Introduce variables for better readability
+        TR = timing['TR']
+        SS = int(round(timing['SS']))
+        TE = timing['TE']
+        if timing['PADDED']:
+            ST = timing['ST']
+        else:
+            ST = timing['ST']
+            ST = np.concatenate((np.repeat(ST[0], N_PAD_SLICES), ST,
+                                 np.repeat(ST[-1], N_PAD_SLICES)))
+    except:
+        # TODO: Add exception handling
+        raise
+
+    # Sort the corresponding echos into separate time series (4D NIfTI images)
+    n_echos = TE.size
+    if not (mimg.shape[-1] % n_echos == 0):
+        _status("WARNING: The number of volumes in the multi-echo functional "
+                "image is not a multiple of the number of echos, as specified "
+                "in the acquisition timing descriptor file.", args)
+    targetdir = os.path.join(args['id'], FUNC_DIR)
+    if not os.path.isdir(targetdir):
+        _mkdir_p(targetdir)
+    nifti_echo_names = []
+    for i in range(n_echos):
+        # Get corresponding echos from consecutive TRs
+        current_echo_series = mimg[:,:,:,i::n_echos]
+        # Manipulate header to fit the new data
+        hdr.set_data_shape(current_echo_series.shape)
+        # Save the separate echo files next to the multi-echo image
+        echo_name = str(args['label'] + MECHO_TAG)\
+            .replace(".nii.gz", "_echo{:d}.nii.gz").format(i)
+        echo_name = os.path.join(os.path.split(args['multi_echo_pad'])[0],
+                                 echo_name)
+        # Store new file names in a temporary list
+        nifti_echo_names.append(echo_name)
+        try:
+            nib.save(nib.Nifti1Image(current_echo_series, hdr.get_sform(), hdr),
+                     echo_name)
+            _status("SUCCESS: Echo No. {}. file was successfully saved to '{}'"
+                    .format(i, echo_name), args)
+        except:
+            _status("ERROR: Echo No. {}. file could not be saved to '{}'"
+                    .format(i, echo_name), args)
+            # Try to save as much as possible
+            continue
+
+    # MOTION CORRECTION (calls mcflirt and applyxfm4D)
+    # Find the appropriate series of time-to-time rigid-body transfromations
+    # for the first echo (signal is most prominent for this), then apply it to
+    # further echos as well. This relies on the assumption that within-TR head
+    # motion effect are negligible.
+    if not args['fsldir']:
+        args['fsldir'] = get_fsldir()
+    mcflirtcmd = [os.path.join(args['fsldir'], "bin/mcflirt"),
+                  "-in", nifti_echo_names[0],
+                  "-out", nifti_echo_names[0]
+                               .replace(".nii.gz", "_moco"),
+                  "-reffile", args['mref_pad'],
+                  "-mats"]
+    applycmd = []
+    print "For now, it ends here."
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 def multi_echo_analysis(args):
