@@ -1871,7 +1871,7 @@ def multi_echo_analysis(args):
     # Save the STANDARD ERROR OF segment-specific S0 means map
     try:
         fname = os.path.join(targetdir, args['label'] +
-                             "S0_segment_stderr.nii.gz")
+                             "_S0_segment_stderr.nii.gz")
         nib.save(nib.Nifti1Image(stderr_S0_per_segment, hdr_stat.get_sform(),
                                  hdr_stat), fname)
         _status("SUCCESS: An image of the standard errors of cardiac "
@@ -1901,7 +1901,7 @@ def multi_echo_analysis(args):
     # Save the STANDARD ERROR OF segment-specific T2* means map
     try:
         fname = os.path.join(targetdir, args['label'] +
-                             "T2star_segment_stderr.nii.gz")
+                             "_T2star_segment_stderr.nii.gz")
         nib.save(nib.Nifti1Image(stderr_T2star_per_segment,
                                  hdr_stat.get_sform(), hdr_stat), fname)
         _status("SUCCESS: An image of the standard errors of cardiac "
