@@ -1,0 +1,33 @@
+# MRI Acquisition Timing Descriptor File for CSFMRI Analysis
+# ----------------------------------------------------------
+#
+# Every line that starts with a # is regarded as a comment. In-line # can also
+# be used to add comments. Do not change the option keywords. For multiple
+# input, use , (comma) as the separator. Leave blank or comment out the field
+# that you do not want to specify. All white space will be ignored except for
+# newline characters. The line continuing character \ may also be used to make
+# the document readable. Please take extra care to avoid typos in this file.
+#
+# +----------------------------------------------+
+# | TYPE:  multi-echo multi-band EPI acquisition |
+# +----------------------------------------------+
+#
+# Repetition time
+TR =  714   # ms
+# Number of acquisitions until steady state
+SS =  10
+# Echo time(s)
+TE =  27.6, 78.29, 128.98  # ms
+# Slice timings
+ST =  0, 345, 172.5, 520,  \
+      0, 345, 172.5, 520,  \
+      0, 345, 172.5, 520,  \
+      0, 345, 172.5, 520,  \
+      0, 345, 172.5, 520,  \
+      0, 345, 172.5, 520,  \
+      0, 345, 172.5, 520,  \
+      0, 345, 172.5, 520   # ms
+# Volume padding
+# True: The list of slice timings have been corrected for the volume padding.
+# False: Padded slices will be added automatically to the slice timings.
+PADDED  = False

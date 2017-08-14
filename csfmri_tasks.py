@@ -93,6 +93,7 @@ TASK_LIST = set(TASK_ORDER.keys())
 FMAP_DIR = "fmap"   # for field map and related images
 ANAT_DIR = "anat"   # for structural image (not the output of fsl_anat!)
 FUNC_DIR = "func"   # for the functional image(s) and reference image(s)
+FEAT_DIR = "singleecho" # base name for feat directory
 MASK_DIR = "masks"  # for the eroded brain masks (single-echo analysis)
 BIO_DIR = "bio"     # for the biopac recordings
 RESULTS_DIR = "results"     # output directory for single-echo and multi-echo
@@ -104,7 +105,6 @@ ANAT_TAG = "_structural.nii.gz"
 FMAP_TAG = "_fmap.nii.gz"
 FMAG_TAG = "_fmap_magnitude.nii.gz"
 FPHASE_TAG = "_fmap_phasediff.nii.gz"
-FMAG_BET_TAG = "_fmap_magnitude_brain.nii.gz"
 SECHO_TAG = "_task_rest.nii.gz"
 SREF_TAG = "_task_rest_sbref.nii.gz"
 STIME_TAG = "_single_echo_timing.txt"
@@ -276,6 +276,8 @@ def _secure_path(dirpath, args, confirm_message=None, msg_success=None,
             except:
                 _status(msg_failure, args)
                 raise GenericIOException()
+
+    return dirpath
 
 
 def _run(command, args, bg=False):
@@ -639,13 +641,22 @@ def create_field_map(args):
     The output is saved into the subject directory or copied to the respective
     BIDS sub-directory (/fmap) when -copy is set."""
 
-    _status("Calculating field map...", args)
-    if not args['copy']:
-        pass
-    else:
-        # Specify target directory
-        targetdir = os.path.join(args['id'], FMAP_DIR)
+    # FIXME: Copying is a very sensitive thing here. This must be reviewed.
 
+    # Update status
+    _status("Calculating field map...", args)
+
+    # Specify target directory
+    try:
+        targetdir = _secure_path(os.path.join(args['id'], FMAP_DIR), args)
+    except:
+        targetdir = args['id']
+
+    if not args['copy']:
+        # The brain-extracted magnitude image will have to be next to the
+        # magnitude image.
+        targetdir = os.path.split(args['fmag'])[0]
+    else:
         # Copy and rename the magnitude image.
         new_fmag = os.path.join(targetdir, args['label'] + FMAG_TAG)
         try:
@@ -668,9 +679,13 @@ def create_field_map(args):
             raise
 
     # Run brain extraction on magnitude image (by calling bet from FSL)
-    betcmd = [os.path.join(args['fsldir'], "bin/bet"), new_fmag,
-              os.path.join(targetdir, args['label']) +
-              FMAG_BET_TAG, '-f', str(args['fractint'])]
+    # Please note that the "_brain.nii.gz" is not hard coding but a necessity
+    # for FEAT (see hint for B0 unwarping in Feat_gui).
+    bet_mag_name = os.path.split(args['fmag'])[1]
+    bet_mag_name = str(bet_mag_name).replace(".nii.gz", "_brain.nii.gz")
+    args['fmag_brain'] = os.path.join(targetdir, bet_mag_name)
+    betcmd = [os.path.join(args['fsldir'], "bin/bet"), args['fmag'],
+              args['fmag_brain'], '-f', str(args['fractint'])]
     try:
         _run(betcmd, args, bg=False)
     except NothingDoneException:
@@ -678,9 +693,10 @@ def create_field_map(args):
         raise
 
     # Prepare the field map (by calling fsl_prepare_fieldmap)
+
     fpfcmd = [os.path.join(args['fsldir'], "bin/fsl_prepare_fieldmap"),
-              'SIEMENS', new_fphase,
-              os.path.join(targetdir, str(args['label'])) + FMAG_BET_TAG,
+              'SIEMENS', args['fphase'],
+              args['fmag_brain'],
               os.path.join(targetdir, str(args['label'])) + FMAP_TAG,
               str(args['echodiff'])]
     try:
@@ -870,6 +886,7 @@ def create_cheating_ev(args):
             np.savetxt(fname, ev.astype(np.int8), fmt="%d")
             _status("The cheating EV file was successfully saved to '{}'."
                     .format(fname), args)
+            args['sechev'] = fname
         except:
             msg = "ERROR: The cheating EV file could not be saved to '{}'."\
                   .format(fname)
@@ -877,6 +894,8 @@ def create_cheating_ev(args):
             raise GenericIOException(msg)
 
     # MULTI-ECHO (Not used at the moment)
+    # FIXME: Need to test if this is really required.
+    """
     _status("Creating the cheating explanatory variable for the multi-echo "
             "image...", args)
     if not args['multi_echo']:
@@ -899,11 +918,13 @@ def create_cheating_ev(args):
             np.savetxt(fname, ev.astype(np.int8), fmt="%d")
             _status("The cheating EV file was successfully created at '{}'."
                     .format(fname), args)
+            args['mechev'] = fname
         except:
             msg = "ERROR: The cheating EV file could not be created at '{}'."\
                   .format(fname)
             _status(msg, args)
             raise GenericIOException(msg)
+    """
 
 
 def pad_single_echo(args):
@@ -1130,8 +1151,91 @@ def load_fsl_anatdir(args):
 
 
 def run_feat(args):
-    print "run_feat"
-    pass
+    """This sub-routine runs FEAT with the required settings, using the input
+    from the program arguments."""
+
+    # Update status
+    _status("Running FEAT... This might take as long as 3-5 hours.", args)
+
+    # Create copy of template design file and edit it accordingly
+    fsf_template_path = args['progdir'] + "templates/feat.fsf"
+    current_fsf_path = os.path.join(args['id'], "feat_design.fsf")
+    if not os.path.isfile(fsf_template_path):
+        raise ImportError("FEAT configuration file (.fsf) template could not "
+                          "be loaded from {}".format(fsf_template_path))
+    else:
+        shutil.copy2(fsf_template_path, current_fsf_path)
+
+    # Create target directory for FEAT analysis
+    try:
+        targetdir = _secure_path(os.path.join(args['id'], FEAT_DIR), args)\
+                    .strip(os.sep)
+    except:
+        msg = "The target directory for FEAT could not be created."
+        _status(msg, args)
+        raise GenericIOException(msg)
+
+    # Open timing file
+    try:
+        timing = _parse_timing_file(args['stime'], args)
+        TR = timing['TR']
+        TE = timing['TE'][0]
+    except:
+        msg = "The single-echo acquisition timing descriptor file could not " \
+              "be loaded from '{}'.".format(args['stime'])
+        _status(msg, args)
+        raise NotFoundException(msg)
+
+    # Load shape information from the single-echo functional image
+    try:
+        single_echo_shape = nib.load(args['single_echo_pad'])\
+                            .header.get_data_shape()
+    except:
+        msg = "The single-echo functional image could not be loaded from '{}'."\
+              .format(args['stime'])
+        _status(msg, args)
+        raise NotFoundException(msg)
+
+    if len(single_echo_shape) >= 4:
+        msg = "The single-echo functional image had invalid shape: {}"\
+            .format(single_echo_shape)
+        _status(msg, args)
+        raise NIFTIException(msg)
+
+    # Load bias-corrected brain-extracted image from the .anat directory
+    struct_biascorr_brain = os.path.realpath(glob.glob(
+        os.path.join(args['anatdir'], "*_biascorr_brain.nii.gz"))[0])
+
+    # Gather all information
+    fsfdata = \
+        {"$OUTPUTDIR": "\"" + targetdir + "\"",
+         "$TR": TR/1000.0,
+         "$VOLUMES": single_echo_shape[3],
+         "$DT": args['echodiff'],
+         "$TE": TE,
+         "$SMOOTH": 0.0,
+         "$STANDARD": "\"" + os.path.join(args['fsldir'], "/data/standard/"
+                      "MNI152_T1_2mm_brain").strip(os.sep) + "\"",
+         "$VOXELS": np.prod(single_echo_shape),
+         "$FUNC": "\"" + args['single_echo_pad'] + "\"",
+         "$REF": "\"" + args['sref_pad'] + "\"",
+         "$FMAP": "\"" + args['fmap'] + "\"",
+         "$MAG_FMAP_BRAIN": "\"" + args['fmag_brain'] + "\"",
+         "$STRUCT": "\"" + struct_biascorr_brain + "\"",
+         "$EV": "\"" + args['sechev'] + "\""}
+
+    # Create a working instance of a FEAT configuration file
+    with open(current_fsf_path, mode="r") as design_file:
+        filedata = design_file.read()
+    for key in fsfdata.keys():
+        filedata = filedata.replace(key, str(fsfdata[key]))
+    with open(current_fsf_path, mode="w") as design_file:
+        design_file.write(filedata)
+
+    # Run FEAT in the background
+    featcmd = [os.path.join(args['fsldir'], "/bin/feat"),
+                            os.path.realpath(current_fsf_path)]
+    _run(featcmd, args, bg=True)
 
 
 def load_featdir(args):
@@ -1223,10 +1327,6 @@ def single_echo_analysis(args):
     # Erode bias-corrected brain-extracted structural image (img) and save into
     # the BIDS directory for masks.
     # (calls fslmaths)
-
-    # struct_base_name = os.path.split(args['anatdir'])[-1].replace(".anat", "")
-    # source_img = os.path.join(args['anatdir'], struct_base_name +
-    #                           "_biascorr_brain.nii.gz")
     source_img = glob.glob(os.path.join(args['anatdir'],
                                         "*_biascorr_brain.nii.gz"))[0]
     struct_base_name = os.path.split(source_img)[-1]\

@@ -399,7 +399,9 @@ def task_selector(args):
     tasks['create_field_map'] = check_requirements(reqs, args)
 
     # Load scanner field map
-    reqs = {"fmap"}
+    # See the hint of B0 warping in Feat_gui. Both a rad/s and a magnitude image
+    # is needed.
+    reqs = {"fmap", "fmag"}
     tasks['load_field_map'] = check_requirements(reqs, args)
     # As loading a field map is easier than calculating it, let this task take
     # precedence.
@@ -687,7 +689,10 @@ def main():
         # case of an exception, try to continue the work as long as possible.
 
         # Just for debugging
-        print current_args
+        # print current_args
+
+        # Make the program directory path available to the task functions
+        current_args['progdir'] = os.path.realpath(__file__)[0]
 
         # Perform tasks
         for _, task in enumerate(tasks):
