@@ -1158,22 +1158,13 @@ def run_feat(args):
     _status("Running FEAT... This might take as long as 3-5 hours.", args)
 
     # Create copy of template design file and edit it accordingly
-    fsf_template_path = args['progdir'] + "templates/feat.fsf"
+    fsf_template_path = os.path.join(args['progdir'], "templates/feat.fsf")
     current_fsf_path = os.path.join(args['id'], "feat_design.fsf")
     if not os.path.isfile(fsf_template_path):
         raise ImportError("FEAT configuration file (.fsf) template could not "
                           "be loaded from {}".format(fsf_template_path))
     else:
         shutil.copy2(fsf_template_path, current_fsf_path)
-
-    # Create target directory for FEAT analysis
-    try:
-        targetdir = _secure_path(os.path.join(args['id'], FEAT_DIR), args)\
-                    .strip(os.sep)
-    except:
-        msg = "The target directory for FEAT could not be created."
-        _status(msg, args)
-        raise GenericIOException(msg)
 
     # Open timing file
     try:
@@ -1196,7 +1187,7 @@ def run_feat(args):
         _status(msg, args)
         raise NotFoundException(msg)
 
-    if len(single_echo_shape) >= 4:
+    if len(single_echo_shape) < 4:
         msg = "The single-echo functional image had invalid shape: {}"\
             .format(single_echo_shape)
         _status(msg, args)
@@ -1208,14 +1199,14 @@ def run_feat(args):
 
     # Gather all information
     fsfdata = \
-        {"$OUTPUTDIR": "\"" + targetdir + "\"",
+        {"$OUTPUTDIR": "\"" + os.path.join(args['id'], FEAT_DIR) + "\"",
          "$TR": TR/1000.0,
          "$VOLUMES": single_echo_shape[3],
          "$DT": args['echodiff'],
          "$TE": TE,
          "$SMOOTH": 0.0,
-         "$STANDARD": "\"" + os.path.join(args['fsldir'], "/data/standard/"
-                      "MNI152_T1_2mm_brain").strip(os.sep) + "\"",
+         "$STANDARD": "\"" + os.path.join(args['fsldir'], "data/standard/"
+                      "MNI152_T1_2mm_brain") + "\"",
          "$VOXELS": np.prod(single_echo_shape),
          "$FUNC": "\"" + args['single_echo_pad'] + "\"",
          "$REF": "\"" + args['sref_pad'] + "\"",
@@ -1233,7 +1224,7 @@ def run_feat(args):
         design_file.write(filedata)
 
     # Run FEAT in the background
-    featcmd = [os.path.join(args['fsldir'], "/bin/feat"),
+    featcmd = [os.path.join(args['fsldir'], "bin/feat"),
                             os.path.realpath(current_fsf_path)]
     _run(featcmd, args, bg=True)
 

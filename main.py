@@ -692,7 +692,7 @@ def main():
         # print current_args
 
         # Make the program directory path available to the task functions
-        current_args['progdir'] = os.path.realpath(__file__)[0]
+        current_args['progdir'] = os.path.split(os.path.realpath(__file__))[0]
 
         # Perform tasks
         for _, task in enumerate(tasks):
