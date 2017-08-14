@@ -52,6 +52,8 @@ from math import ceil
 from cardioresp_GLM import GLMObject
 import glob
 from sklearn.cluster import KMeans
+import peakutils
+import copy
 
 
 # DEFINITIONS AND CODE
@@ -150,7 +152,7 @@ def absolutise_paths(args):
                  'fmag', 'fphase', 'log', 'config'}
     for key in path_args:
         if args[key] is not None:
-            args[key] = os.path.abspath(args[key])
+            args[key] = os.path.realpath(os.path.abspath(args[key]))
 
     return args
 
@@ -172,6 +174,20 @@ def validate_input_paths(args):
             args[key] = None
 
     return args
+
+
+# Source: https://stackoverflow.com/questions/600268/
+# mkdir-p-functionality-in-python
+def _mkdir_p(path):
+    """Creates directories along the entire specified path. The existing
+    directory exception is suppressed."""
+    try:
+        os.makedirs(path)
+    except OSError as exc:
+        if exc.errno == EEXIST and os.path.isdir(path):
+            pass
+        else:
+            raise
 
 
 def _status(msg, args):
@@ -447,9 +463,9 @@ def _parse_timing_file(timing_file, args):
             argval = "=".join(line.split("=")[1:]).split(",")
 
             if timing[argname] is not None:
-                _status("WARNING: Argument '{}' specified more than "
-                       "once. The last specification will be used."
-                       .format(argname), args)
+                _status("WARNING: Argument '{}' specified more than once. The "
+                        "last specification will be used."
+                        .format(argname), args)
 
             if argval != ['']:
                 if argname == "TR":
@@ -512,22 +528,53 @@ def _parse_bio_file(bio_file, args, column_order=BIOFILE_COLUMN_ORDER):
         try:
             biodata = np.loadtxt(bio_file, dtype=np.float64)
         except:
-            msg = "The physiological data file could not be read from '{}' or " \
-                  "it contains non-numeric values.".format(bio_file)
+            msg = "The physiological data file could not be read from '{}' " \
+                  "or it contains non-numeric values.".format(bio_file)
             _status(msg, args)
             raise GenericIOException(msg)
 
         # Rearrange valuable columns, so that it is always in the following
         # order from left to right: trigger, cardiac, respiratory.
         # (This is a built-in convention.)
-        biodata = biodata[:,
-                  np.array((column_order['trigger'], column_order['cardiac'],
-                            column_order['respiratory']))]
+        biodata = \
+            biodata[:,np.array((column_order['trigger'],
+                                column_order['cardiac'],
+                                column_order['respiratory']))]
 
         # Update status and return re-arranged dataset
         _status("SUCCESS: The physiological data file was successfully read "
                 "from '{}'.".format(bio_file), args)
         return biodata
+
+
+def _find_peaks(signal, minsep=None):
+    """Finds positive peaks in a 1-D signal using the peakutils library. The
+    minimum separation of peaks is guessed from the dominant component of the
+    demeaned Fourier-transformed signal, but it can also be set explicitly."""
+
+    # Demean signal
+    _signal = signal - np.mean(signal)
+
+    if minsep is None:
+        # Run FFT on the signal
+        # Note that frequency scale is arbitrary.
+        fft_signal = np.abs(np.fft.rfft(_signal))
+        fft_freqs = np.fft.rfftfreq(_signal.size, 1)
+
+        # Find dominant Fourier component
+        fft_max_freq = fft_freqs[np.argmax(fft_signal)]
+        minsep = round(1.0 / fft_max_freq * 2/3.0)
+    else:
+        try:
+            minsep = float(minsep)
+        except:
+            raise ValueError("The minsep argument must be real-valued.")
+
+    # Find peaks
+    peak_indices = peakutils.indexes(_signal, thres=0.02 / max(_signal),
+                                     min_dist=minsep)
+
+    return np.array(peak_indices)
 
 
 def load_fsl(args):
@@ -543,20 +590,6 @@ def load_fsl(args):
             subprocess.call(["open", "https://fsl.fmrib.ox.ac.uk/fsl/fslwiki"])
         finally:
             exit(1)
-
-
-# Source: https://stackoverflow.com/questions/600268/
-# mkdir-p-functionality-in-python
-def _mkdir_p(path):
-    """Creates directories along the entire specified path. The existing
-    directory exception is suppressed."""
-    try:
-        os.makedirs(path)
-    except OSError as exc:
-        if exc.errno == EEXIST and os.path.isdir(path):
-            pass
-        else:
-            raise
 
 
 def create_bids_dirs(args):
@@ -581,17 +614,18 @@ def create_bids_dirs(args):
     for dirname in bids_dirs:
         try:
             dirname = os.path.abspath(os.path.join(args['id'], dirname))
-            if not args['auto']:
-                if confirmed_to_proceed("CONFIRM: Creating '{}': "
-                   .format(os.path.join(args['id'], dirname)),
-                                        forceanswer=False):
-                    _mkdir_p(dirname)
+            if not os.path.isdir(dirname):
+                if not args['auto']:
+                    if confirmed_to_proceed("CONFIRM: Creating '{}': "
+                       .format(os.path.join(args['id'], dirname)),
+                                            forceanswer=False):
+                        _mkdir_p(dirname)
+                    else:
+                        _status("WARNING: '{}' was not created."
+                               .format(os.path.join(args['id'], dirname)), args)
+                        continue
                 else:
-                    _status("WARNING: '{}' was not created."
-                           .format(os.path.join(args['id'], dirname)), args)
-                    continue
-            else:
-                _mkdir_p(dirname)
+                    _mkdir_p(dirname)
         except:
             # FIXME: Add exception handling
             _status("ERROR: The directory '{}' could not be created."
@@ -885,29 +919,38 @@ def pad_single_echo(args):
         _status(msg, args)
         raise NotFoundException(msg)
     else:
-        padded_nifti = _pad(args['single_echo'], n_slices=N_PAD_SLICES)
-        # Save it next to the single_echo image
+        # Define padded image path and name
         # FIXME: Hard coding the extension is bad practice.
         fpath, fname = os.path.split(args['single_echo'])
-        fname = fname.replace(".nii.gz", "_padded{}.nii.gz"
-                              .format(N_PAD_SLICES))
+        fname = fname.replace(".nii.gz", "_padded.nii.gz")
         fname = os.path.join(fpath, fname)
-        try:
-            nib.save(padded_nifti, fname)
-            _status("Padded single-echo functional image was saved to '{}'"
-                    .format(fname), args)
 
-            # Update information in program argument dictionary
-            args['single_echo_pad'] = fname
-            _status("Path to the single-echo functional image was set to the "
-                    "padded image: '{}'".format(fname), args)
+        # Check whether the defined file already exist
+        do_padding = True
+        if os.path.isfile(fname):
+            if not args['auto']:
+                if confirmed_to_proceed("Would you like to use the existing "
+                                        "padded single-echo functional image? "
+                                        "(y/n): "):
+                    do_padding = False
+        if do_padding:
+            padded_nifti = _pad(args['single_echo'], n_slices=N_PAD_SLICES)
+            # Save the padded single-echo functional image
+            try:
+                nib.save(padded_nifti, fname)
+                _status("Padded single-echo functional image was saved to '{}'"
+                        .format(fname), args)
+            except:
+                # Suppress error and try to do as many tasks as possible.
+                msg = "ERROR while saving the padded single-echo functional " \
+                      "image to '{}'.".format(fname)
+                _status(msg, args)
+                pass
 
-        except:
-            # Supress error and try to do as many tasks as possible.
-            msg = "ERROR while saving the padded single-echo functional " \
-                  "image to '{}'.".format(fname)
-            _status(msg, args)
-            pass
+        # Update information in program argument dictionary
+        args['single_echo_pad'] = fname
+        _status("Path to the single-echo functional image was set to "
+                "the padded image: '{}'".format(fname), args)
 
     # Single-echo reference image
     _status("Padding the single-echo reference image with {} zero-slices "
@@ -917,28 +960,38 @@ def pad_single_echo(args):
         _status(msg, args)
         raise NotFoundException(msg)
     else:
-        padded_nifti = _pad(args['sref'], n_slices=N_PAD_SLICES)
-        # Save it next to the single_echo image
+        # Define padded image path and name
         # FIXME: Hard coding the extension is bad practice.
         fpath, fname = os.path.split(args['sref'])
-        fname = fname.replace(".nii.gz", "_padded{}.nii.gz"
-                              .format(N_PAD_SLICES))
+        fname = fname.replace(".nii.gz", "_padded.nii.gz")
         fname = os.path.join(fpath, fname)
-        try:
-            nib.save(padded_nifti, fname)
-            _status("Padded single-echo reference image was saved to '{}'"
-                    .format(fname), args)
 
-            # Update information in program argument dictionary
-            args['sref_pad'] = fname
-            _status("Path to the single-echo reference image was set to the "
-                    "padded image: '{}'".format(fname), args)
-        except:
-            # Supress error and try to do as many tasks as possible.
-            msg = "ERROR while saving the padded single-echo reference " \
-                  "image to '{}'.".format(fname)
-            _status(msg, args)
-            pass
+        # Check whether the defined file already exist
+        do_padding = True
+        if os.path.isfile(fname):
+            if not args['auto']:
+                if confirmed_to_proceed("Would you like to use the existing "
+                                        "padded single-echo reference image? "
+                                        "(y/n): "):
+                    do_padding = False
+        if do_padding:
+            padded_nifti = _pad(args['sref'], n_slices=N_PAD_SLICES)
+            # Save the padded single-echo reference image
+            try:
+                nib.save(padded_nifti, fname)
+                _status("Padded single-echo reference image was saved to '{}'"
+                        .format(fname), args)
+            except:
+                # Supress error and try to do as many tasks as possible.
+                msg = "ERROR while saving the padded single-echo reference " \
+                      "image to '{}'.".format(fname)
+                _status(msg, args)
+                pass
+
+        # Update information in program argument dictionary
+        args['sref_pad'] = fname
+        _status("Path to the single-echo reference image was set to "
+                "the padded image: '{}'".format(fname), args)
 
 
 def pad_multi_echo(args):
@@ -954,28 +1007,39 @@ def pad_multi_echo(args):
         _status(msg, args)
         raise NotFoundException(msg)
     else:
-        padded_nifti = _pad(args['multi_echo'], n_slices=N_PAD_SLICES)
-        # Save it next to the single-echo image
+        # Define padded image path and name
         # FIXME: Hard coding the extension is bad practice.
         fpath, fname = os.path.split(args['multi_echo'])
-        fname = fname.replace(".nii.gz", "_padded{}.nii.gz"
-                              .format(N_PAD_SLICES))
+        fname = fname.replace(".nii.gz", "_padded.nii.gz")
         fname = os.path.join(fpath, fname)
-        try:
-            nib.save(padded_nifti, fname)
-            _status("Padded multi-echo functional image was saved to '{}'"
-                    .format(fname), args)
 
-            # Update information in program argument dictionary
-            args['multi_echo_pad'] = fname
-            _status("Path to the multi-echo functional image was set to the "
-                    "padded image: '{}'".format(fname), args)
-        except:
-            # Supress error and try to do as many tasks as possible.
-            msg = "ERROR while saving the padded multi-echo functional " \
-                  "image to '{}'.".format(fname)
-            _status(msg, args)
-            pass
+        # Check whether the defined file already exist
+        do_padding = True
+        if os.path.isfile(fname):
+            if not args['auto']:
+                if confirmed_to_proceed("Would you like to use the existing "
+                                        "padded multi-echo functional image? "
+                                        "(y/n): "):
+                    do_padding = False
+
+        if do_padding:
+            padded_nifti = _pad(args['multi_echo'], n_slices=N_PAD_SLICES)
+            # Save the padded multi-echo functional image
+            try:
+                nib.save(padded_nifti, fname)
+                _status("Padded multi-echo functional image was saved to '{}'"
+                        .format(fname), args)
+            except:
+                # Supress error and try to do as many tasks as possible.
+                msg = "ERROR while saving the padded multi-echo functional " \
+                      "image to '{}'.".format(fname)
+                _status(msg, args)
+                pass
+
+        # Update information in program argument dictionary
+        args['multi_echo_pad'] = fname
+        _status("Path to the multi-echo functional image was set to "
+                "the padded image: '{}'".format(fname), args)
 
     # Single-echo reference image
     _status("Padding the multi-echo reference image with {} zero-slices "
@@ -985,28 +1049,39 @@ def pad_multi_echo(args):
         _status(msg, args)
         raise NotFoundException(msg)
     else:
-        padded_nifti = _pad(args['mref'], n_slices=N_PAD_SLICES)
-        # Save it next to the multi-echo image
+        # Define padded image path and name
         # FIXME: Hard coding the extension is bad practice.
         fpath, fname = os.path.split(args['mref'])
-        fname = fname.replace(".nii.gz", "_padded{}.nii.gz"
-                              .format(N_PAD_SLICES))
+        fname = fname.replace(".nii.gz", "_padded.nii.gz")
         fname = os.path.join(fpath, fname)
-        try:
-            nib.save(padded_nifti, fname)
-            _status("Padded multi-echo reference image was saved to '{}'"
-                    .format(fname), args)
 
-            # Update information in program argument dictionary
-            args['mref_pad'] = fname
-            _status("Path to the multi-echo reference image was set to the "
-                    "padded image: '{}'".format(fname), args)
-        except:
-            # Supress error and try to do as many tasks as possible.
-            msg = "ERROR while saving the padded multi-echo reference " \
-                  "image to '{}'.".format(fname)
-            _status(msg, args)
-            pass
+        # Check whether the defined file already exist
+        do_padding = True
+        if os.path.isfile(fname):
+            if not args['auto']:
+                if confirmed_to_proceed("Would you like to use the existing "
+                                        "padded multi-echo reference image? "
+                                        "(y/n): "):
+                    do_padding = False
+
+        if do_padding:
+            padded_nifti = _pad(args['mref'], n_slices=N_PAD_SLICES)
+            # Save the padded multi-echo reference image
+            try:
+                nib.save(padded_nifti, fname)
+                _status("Padded multi-echo reference image was saved to '{}'"
+                        .format(fname), args)
+            except:
+                # Supress error and try to do as many tasks as possible.
+                msg = "ERROR while saving the padded multi-echo reference " \
+                      "image to '{}'.".format(fname)
+                _status(msg, args)
+                pass
+
+        # Update information in program argument dictionary
+        args['mref_pad'] = fname
+        _status("Path to the multi-echo reference image was set to the "
+                "padded image: '{}'".format(fname), args)
 
 
 def run_fsl_anat(args):
@@ -1063,11 +1138,11 @@ def load_featdir(args):
     """Loads existing output directory from a previous FEAT session."""
 
     if not os.path.isdir(args['sfeat']):
-        _status("ERROR: The provided FEAT directory does not exist.".format(args['sfeat']),
-                args)
+        _status("ERROR: The provided FEAT directory does not exist."
+                .format(args['sfeat']), args)
     else:
-        _status("SUCCESS: Path to FEAT directory was set to '{}'.".format(args['sfeat']),
-                args)
+        _status("SUCCESS: Path to FEAT directory was set to '{}'."
+                .format(args['sfeat']), args)
 
 
 def load_biodata(args):
@@ -1149,13 +1224,13 @@ def single_echo_analysis(args):
     # the BIDS directory for masks.
     # (calls fslmaths)
 
-    #struct_base_name = os.path.split(args['anatdir'])[-1].replace(".anat", "")
-    #source_img = os.path.join(args['anatdir'], struct_base_name +
-    #                          "_biascorr_brain.nii.gz")
+    # struct_base_name = os.path.split(args['anatdir'])[-1].replace(".anat", "")
+    # source_img = os.path.join(args['anatdir'], struct_base_name +
+    #                           "_biascorr_brain.nii.gz")
     source_img = glob.glob(os.path.join(args['anatdir'],
                                         "*_biascorr_brain.nii.gz"))[0]
     struct_base_name = os.path.split(source_img)[-1]\
-                       .replace("_biascorr_brain.nii.gz", "")
+        .replace("_biascorr_brain.nii.gz", "")
     if not os.path.isfile(source_img):
         msg = "ERROR: The bias-corrected brain-extracted structural image "\
               "was not found in the .anat directory ('{}')."\
@@ -1166,7 +1241,7 @@ def single_echo_analysis(args):
         ero_img = os.path.join(args['maskdir'], ERO_NAME)
         try:
             _copy(source_img, ero_img, args,
-              description="bias-corrected brain-extracted structural image")
+                  description="bias-corrected brain-extracted structural image")
         except:
             raise
         erocmd = [os.path.join(args['fsldir'], "bin/fslmaths"), ero_img,
@@ -1230,8 +1305,8 @@ def single_echo_analysis(args):
             _status("SUCCESS: 4D NIfTI image of residuals was successfully "
                     "loaded from '{}'.".format(res_path), args)
         except:
-            msg = "ERROR: 4D NIfTI image of residuals could not be loaded from "\
-                  "'{}'.".format(res_path)
+            msg = "ERROR: 4D NIfTI image of residuals could not be loaded " \
+                  "from '{}'.".format(res_path)
             _status(msg, args)
             raise NIFTIException(msg)
 
@@ -1269,7 +1344,7 @@ def single_echo_analysis(args):
     trigger_duration = TRIGGER_DURATION * samples_per_ms
     trigger_on = np.where(biodata[:, 0] > trigger_threshold)[0]
     ss_begins = int(ceil(np.min(trigger_on) +
-                     timing['SS'] * timing['TR'] * samples_per_ms))
+                         timing['SS'] * timing['TR'] * samples_per_ms))
     scan_start = int(np.min(trigger_on[trigger_on > ss_begins]))
     scan_end = int(np.max(trigger_on[trigger_on > ss_begins]) + samples_per_TR
                    - trigger_duration)
@@ -1425,6 +1500,7 @@ def prepare_multi_echo(args):
         try:
             mimg = nib.load(args['multi_echo_pad'])
             hdr = mimg.header
+            args['mhdr'] = copy.deepcopy(hdr)
             mimg = mimg.get_data()
         except:
             msg = "The padded multi-echo functional image could not be " \
@@ -1449,7 +1525,7 @@ def prepare_multi_echo(args):
         # TODO: Add exception handling
         raise
 
-    # Sort the corresponding echos into separate time series (4D NIfTI images)
+    # SORTING ECHOS INTO SEPARATE TIME SERIES (4D NIfTI IMAGES)
     n_echos = TE.size
     if not (mimg.shape[-1] % n_echos == 0):
         _status("WARNING: The number of volumes in the multi-echo functional "
@@ -1458,29 +1534,36 @@ def prepare_multi_echo(args):
     targetdir = os.path.join(args['id'], FUNC_DIR)
     if not os.path.isdir(targetdir):
         _mkdir_p(targetdir)
-    nifti_echo_names = []
-    for i in range(n_echos):
-        # Get corresponding echos from consecutive TRs
-        current_echo_series = mimg[:,:,:,i::n_echos]
-        # Manipulate header to fit the new data
-        hdr.set_data_shape(current_echo_series.shape)
-        # Save the separate echo files next to the multi-echo image
-        echo_name = str(args['label'] + MECHO_TAG)\
-            .replace(".nii.gz", "_echo{:d}.nii.gz").format(i)
-        echo_name = os.path.join(os.path.split(args['multi_echo_pad'])[0],
-                                 echo_name)
-        # Store new file names in a temporary list
-        nifti_echo_names.append(echo_name)
-        try:
-            nib.save(nib.Nifti1Image(current_echo_series, hdr.get_sform(), hdr),
-                     echo_name)
-            _status("SUCCESS: Echo No. {}. file was successfully saved to '{}'"
-                    .format(i, echo_name), args)
-        except:
-            _status("ERROR: Echo No. {}. file could not be saved to '{}'"
-                    .format(i, echo_name), args)
-            # Try to save as much as possible
-            continue
+
+    # Check whether the separate echo files already exist
+    echo_path = os.path.split(args['multi_echo_pad'])[0]
+    echo_names = [os.path.join(echo_path, str(args['label'] + MECHO_TAG)
+                               .replace(".nii.gz", "_echo{:d}.nii.gz")
+                               .format(i)) for i in range(n_echos)]
+    do_separation = True
+    if all([os.path.isfile(echo_name) for echo_name in echo_names]):
+        if not args['auto']:
+            if confirmed_to_proceed("Would you like to use the existing set of "
+                                    "separate echo images? (y/n): "):
+                do_separation = False
+
+    if do_separation:
+        for i, echo_name in enumerate(echo_names):
+            # Get corresponding echos from consecutive TRs
+            current_echo_series = mimg[:,:,:,i::n_echos]
+            # Manipulate header to fit the new data
+            hdr.set_data_shape(current_echo_series.shape)
+            # Save the current echo into file
+            try:
+                nib.save(nib.Nifti1Image(current_echo_series, hdr.get_sform(),
+                                         hdr), echo_name)
+                _status("SUCCESS: Echo No. {}. file was successfully saved to "
+                        "'{}'".format(i, echo_name), args)
+            except:
+                _status("ERROR: Echo No. {}. file could not be saved to '{}'"
+                        .format(i, echo_name), args)
+                # Try to save as much as possible
+                continue
 
     # MOTION CORRECTION (calls mcflirt and applyxfm4D)
     # Find the appropriate series of time-to-time rigid-body transfromations
@@ -1489,34 +1572,345 @@ def prepare_multi_echo(args):
     # motion effect are negligible.
     if not args['fsldir']:
         args['fsldir'] = get_fsldir()
-    mcflirtcmd = [os.path.join(args['fsldir'], "bin/mcflirt"),
-                  "-in", nifti_echo_names[0],
-                  "-out", nifti_echo_names[0]
-                               .replace(".nii.gz", "_moco"),
-                  "-reffile", args['mref_pad'],
-                  "-mats"]
-    applycmd = []
-    print "For now, it ends here."
 
+    # Check for existing motion-corrected echo files:
+    echo_moco_names = [str(echo).replace(".nii.gz", "_moco.nii.gz")
+                       for echo in echo_names]
+    run_moco = False
+    if all([os.path.isfile(echo) for echo in echo_moco_names]):
+        if args['auto'] or (not confirmed_to_proceed(
+                "Would you like to use the existing motion-corrected echo "
+                "images? (y/n): ", forceanswer=True)):
+            run_moco = True
 
+    if run_moco:
+        first_echo_moco = echo_names[0].replace(".nii.gz", "_moco")
+        mcflirtcmd = [os.path.join(args['fsldir'], "bin/mcflirt"),
+                      "-in", echo_names[0],
+                      "-out", first_echo_moco,
+                      "-reffile", args['mref_pad'],
+                      "-mats"]
+        try:
+            _run(mcflirtcmd, args, bg=False)
+        except:
+            raise
 
+        for i, echo in enumerate(echo_names[1:]):
+            applycmd = [os.path.join(args['fsldir'], "bin/applyxfm4D"),
+                        echo,
+                        first_echo_moco + ".nii.gz",
+                        echo_moco_names[i+1],
+                        first_echo_moco + ".mat",
+                        "-fourdigit"]
+            try:
+                _run(applycmd, args, bg=True)
+            except NothingDoneException as exc:
+                _status(exc.message, args)
+                continue
 
-
-
-
-
-
-
-
-
-
-
-
+    # Add information about echo files to the program argument dictionary
+    args['echo_files'] = echo_moco_names
 
 
 def multi_echo_analysis(args):
-    print "multi_echo_analysis"
-    pass
+    """Assigns MR signal measurements to cardiac cycle segments. Fits
+    exponential curve to the data to export S0 and T2* maps for the entire
+    brain."""
+
+    # Update status
+    _status("Starting multi-echo analysis...", args)
+
+    # Load timing information
+    timing = _parse_timing_file(args['mtime'], args)
+    # Introduce variables for better readability
+    TR = timing['TR']
+    SS = int(round(timing['SS']))
+    TE = timing['TE']
+    if timing['PADDED']:
+        ST = timing['ST']
+    else:
+        ST = timing['ST']
+        ST = np.concatenate((np.repeat(ST[0], N_PAD_SLICES), ST,
+                             np.repeat(ST[-1], N_PAD_SLICES)))
+
+    # Load trigger and cardiac signal
+    triggers, cardiac_signal = _parse_bio_file(args['mbio'], args)[:, :2].T
+
+    # Update status
+    _status("Segmenting cardiac signal...", args)
+
+    # Trim cardiac signal to the duration of steady-state MR acquisition
+    # Note that this time the cardiac signal is not sub-sampled.
+    samples_per_ms = args['sfreq'] / 1000.0
+    samples_per_TR = int(round(samples_per_ms * TR))
+    trigger_threshold = np.mean(KMeans(n_clusters=2).fit(
+        triggers.reshape((-1, 1))).cluster_centers_)
+    trigger_duration = TRIGGER_DURATION * samples_per_ms
+    trigger_on = np.where(triggers > trigger_threshold)[0]
+    ss_begins = int(ceil(np.min(trigger_on) + SS * TR * samples_per_ms))
+    scan_start = int(np.min(trigger_on[trigger_on > ss_begins]))
+    scan_end = int(np.max(trigger_on[trigger_on > ss_begins]) + samples_per_TR
+                   - trigger_duration)
+    cardiac_signal = cardiac_signal[scan_start:scan_end]
+
+    # Find peaks (time points for peak arterial flow) in the cardiac signal
+    card_peak_indices = _find_peaks(cardiac_signal)
+
+    # Discard occasional peak artifacts on both ends of the signal
+    card_peak_indices = np.setdiff1d(card_peak_indices,
+                                     np.array([0, len(cardiac_signal)-1]))
+
+    # Create a 1-D segment mask for the cardiac signal so that each period
+    # consists of a pre-specified number of segments.
+    card_segment_mask = np.zeros_like(cardiac_signal)
+    binwidth = []
+
+    # For full cycles
+    for peak_no in range(len(card_peak_indices) - 1):
+        cycle_start = card_peak_indices[peak_no]
+        cycle_end = card_peak_indices[peak_no + 1]
+        period = int(cycle_end - cycle_start)
+        binwidth.append(int(ceil(period / float(args['cseg']))))
+        # Segment labels must be different from 0.
+        segments = np.concatenate([[i] * binwidth[-1]
+                                   for i in range(1, args['cseg']+1)])
+        card_segment_mask[cycle_start:cycle_end] = segments[:period]
+
+    # For the potentially incomplete leading and trailing cycles
+    binwidth = np.mean(binwidth).astype(np.int64)
+    # Segment labels must be different from 0.
+    segments = np.concatenate([[i] * binwidth
+                               for i in range(1, args['cseg']+1)])
+    cycle_end = card_peak_indices[0]
+    cycle_start = card_peak_indices[-1]
+    # Leading end of cardiac signal
+    card_segment_mask[cycle_end::-1] = \
+        segments[:args['cseg'] * binwidth - cycle_end - 2:-1]
+    # Trailing end of cardiac signal
+    card_segment_mask[cycle_start:] = \
+        segments[:card_segment_mask.size - cycle_start]
+
+    # Load all echos
+    _status("Loading echo time series...", args)
+    echos_exist = [os.path.isfile(echo) for echo in args['echo_files']]
+    if not all(echos_exist):
+        msg = "The following echo file(s) could not be found: {}"\
+              .format("\n".join(args['echo_files'][echos_exist == False]))
+        _status(msg, args)
+        raise NotFoundException(msg)
+    try:
+        # TODO: Add support for non-equal length files (very rare)
+        all_echos = np.concatenate(
+            [nib.load(echo).get_data()[:, :, :, :, np.newaxis]
+             for echo in args['echo_files']], axis=-1)
+    except:
+        msg = "Not all echo files had the same number of time points."
+        _status(msg, args)
+        raise NIFTIException(msg)
+
+    # Calculate S0 and T2* for every TR in every voxel
+
+    _status("Calculating S0 and T2* for every acquisition in each voxel...",
+            args)
+    echos_shape = all_echos.shape
+    log_echos = np.log(all_echos.reshape((-1, echos_shape[-1])))
+    params = np.zeros(log_echos.shape[:-1] + (2,))
+    truevals = \
+        np.where(
+            np.logical_not(np.logical_or(np.any(np.isinf(log_echos), axis=-1),
+                                         np.any(np.isnan(log_echos), axis=-1),
+                                         np.any(np.isneginf(log_echos),
+                                                axis=-1))))[0]
+    log_echos = log_echos[truevals, :]
+    params[truevals, :] = np.polyfit(TE, log_echos.T, 1).T
+    params = params.reshape(echos_shape[:-1] + (2,))
+    T2star = -1.0 / params[:, :, :, :, 0]
+    S0 = np.exp(params[:, :, :, :, 1])
+
+    # Bin the repeated measurements of S0 and T2* into the segments of the
+    # cardiac cycle (when each of them was measured).
+    _status("Binning echo signals, S0, and T2* values into cardiac cycle "
+            "segments...", args)
+
+    # Create an array that stores the echo signals' coincidence with cardiac
+    # cycle segments.
+    all_echos_segmented = np.zeros(echos_shape[:3] + (echos_shape[3],) +
+                                   (echos_shape[-1],))
+    all_echotrains_segmented = np.zeros(echos_shape[:3] + (echos_shape[3],))
+
+    for repeat_no in range(SS, echos_shape[-2]):
+        # Calculate the segments for individual echos
+        for echo_no in range(echos_shape[-1]):
+            index_base = (TE[echo_no] + (repeat_no-SS) * TR) \
+                         * samples_per_ms
+            for slice_no in range(echos_shape[2]):
+                index = int(round(index_base + ST[slice_no]))
+                all_echos_segmented[:, :, slice_no, repeat_no, echo_no] \
+                    = card_segment_mask[index]
+
+        # Calculate the segments for echo trains
+        index_base = (TE[0] + np.mean(TE) + (repeat_no-SS) * TR) \
+                     * samples_per_ms
+        for slice_no in range(echos_shape[2]):
+            index = int(round(index_base + ST[slice_no]))
+            all_echotrains_segmented[:, :, slice_no, repeat_no] = \
+                card_segment_mask[index]
+
+    # Check whether enough data is available.
+
+    # Set output directory
+    targetdir = os.path.join(args['id'], RESULTS_DIR)
+    if not os.path.isdir(targetdir):
+        _mkdir_p(targetdir)
+
+    # Set output shape and adjust NIfTI header
+    stat_shape = echos_shape[:3] + (args['cseg'],)
+    hdr_stat = copy.deepcopy(args['mhdr'])
+    hdr_stat.set_data_shape(stat_shape)
+
+    # Calculate mean signal intensity and standard deviation for each cardiac
+    # cycle segment.
+    for echo_no in range(echos_shape[-1]):
+        # Initialise containers
+        mean_signal_by_segment = np.zeros(stat_shape)
+        stderr_signal_by_segment = np.zeros(stat_shape)
+
+        # Calculate the statistics
+        for segment_no in range(args['cseg']):
+            coords = np.where(all_echos_segmented[:, :, :, :, echo_no] ==
+                              segment_no + 1)
+            tmp = np.full(echos_shape[:-1], np.nan)
+            tmp[coords] = all_echos[coords + (echo_no,)]
+            mean_signal_by_segment[coords[:3] + (segment_no,)] \
+                = np.nanmean(tmp, axis=-1)[coords[:3]]
+            tmp2 = np.nanstd(tmp, axis=-1) / \
+                   np.count_nonzero(~np.isnan(tmp), axis=-1)
+            del tmp
+            stderr_signal_by_segment[coords[:3] + (segment_no,)] = \
+                tmp2[coords[:3]]
+            del tmp2
+
+        # Save the MEAN map
+        try:
+            fname = os.path.join(targetdir, args['label'] +
+                                 "_echo{:d}_segment_mean.nii.gz"
+                                 .format(echo_no))
+            nib.save(nib.Nifti1Image(mean_signal_by_segment,
+                                     hdr_stat.get_sform(), hdr_stat), fname)
+            _status("SUCCESS: An image of cardiac segment-specific mean "
+                    "signals for Echo No. {}. was successfully saved to '{}'."
+                    .format(echo_no, fname), args)
+        except:
+            _status("ERROR: An image of cardiac segment-specific mean signals "
+                    "for Echo No. {}. could not be saved to '{}'."
+                    .format(echo_no, fname), args)
+            # Try to save as many as possible
+            pass
+
+        # Save the STANDARD ERROR map
+        try:
+            fname = os.path.join(targetdir, args['label'] +
+                                 "_echo{:d}_segment_stderr.nii.gz"
+                                 .format(echo_no))
+            nib.save(nib.Nifti1Image(stderr_signal_by_segment,
+                                     hdr_stat.get_sform(), hdr_stat), fname)
+            _status("SUCCESS: An image of cardiac segment-specific standard "
+                    "errors of the mean signal for Echo No. {}. was "
+                    "successfully saved to '{}'.".format(echo_no, fname), args)
+        except:
+            _status("ERROR: An image of cardiac segment-specific standard "
+                    "errors of the mean signal for Echo No. {}. could not be "
+                    "saved to '{}'.".format(echo_no, fname), args)
+            # Try to save as many as possible
+            pass
+
+    # Calculate mean S0 and mean T2* per cardiac cycle segment and calculate
+    # their respective standard errors.
+    mean_S0_per_segment = np.zeros(stat_shape)
+    stderr_S0_per_segment = np.zeros(stat_shape)
+    mean_T2star_per_segment = np.zeros(stat_shape)
+    stderr_T2star_per_segment = np.zeros(stat_shape)
+
+    for segment_no in range(args['cseg']):
+        coords = np.where(all_echotrains_segmented == segment_no + 1)
+        tmp = np.full(echos_shape[:-1], np.nan)
+        tmp[coords] = S0[coords]
+        mean_S0_per_segment[coords[:3] + (segment_no,)] = \
+            np.nanmean(tmp, axis=-1)[coords[:3]]
+        tmp2 = np.nanstd(tmp, axis=-1) / \
+               np.sqrt(np.count_nonzero(~np.isnan(tmp), axis=-1))
+        del tmp
+        stderr_S0_per_segment[coords[:3] + (segment_no,)] = tmp2[coords[:3]]
+        del tmp2
+        tmp = np.full(echos_shape[:-1], np.nan)
+        tmp[coords] = T2star[coords]
+        mean_T2star_per_segment[coords[:3] + (segment_no,)] = \
+            np.nanmean(tmp, axis=-1)[coords[:3]]
+        tmp2 = np.nanstd(tmp, axis=-1) / \
+               np.sqrt(np.count_nonzero(~np.isnan(tmp), axis=-1))
+        del tmp
+        stderr_T2star_per_segment[coords[:3] + (segment_no,)] = tmp2[coords[:3]]
+        del tmp2
+
+    # Save the segment-specific MEAN S0 map
+    try:
+        fname = os.path.join(targetdir, args['label'] +
+                             "_S0_segment_mean.nii.gz")
+        nib.save(nib.Nifti1Image(mean_S0_per_segment, hdr_stat.get_sform(),
+                                 hdr_stat), fname)
+        _status("SUCCESS: An image of cardiac segment-specific mean S0 values "
+                "was successfully saved to '{}'.".format(fname), args)
+    except:
+        _status("ERROR: An image of cardiac segment-specific mean S0 values "
+                "could not be saved to '{}'.".format(fname), args)
+        # Try to save as many as possible
+        pass
+
+    # Save the STANDARD ERROR OF segment-specific S0 means map
+    try:
+        fname = os.path.join(targetdir, args['label'] +
+                             "S0_segment_stderr.nii.gz")
+        nib.save(nib.Nifti1Image(stderr_S0_per_segment, hdr_stat.get_sform(),
+                                 hdr_stat), fname)
+        _status("SUCCESS: An image of the standard errors of cardiac "
+                "segment-specific mean S0 values was successfully saved to "
+                "'{}'.".format(fname), args)
+    except:
+        _status("ERROR: An image of the standard errors of cardiac "
+                "segment-specific mean S0 values could not be saved to '{}'."
+                .format(fname), args)
+        # Try to save as many as possible
+        pass
+
+    # Save the segment-specific MEAN T2* map
+    try:
+        fname = os.path.join(targetdir, args['label'] +
+                             "_T2star_segment_mean.nii.gz")
+        nib.save(nib.Nifti1Image(mean_T2star_per_segment, hdr_stat.get_sform(),
+                                 hdr_stat), fname)
+        _status("SUCCESS: An image of cardiac segment-specific mean T2* values "
+                "was successfully saved to '{}'.".format(fname), args)
+    except:
+        _status("ERROR: An image of cardiac segment-specific mean T2* values "
+                "could not be saved to '{}'.".format(fname), args)
+        # Try to save as many as possible
+        pass
+
+    # Save the STANDARD ERROR OF segment-specific T2* means map
+    try:
+        fname = os.path.join(targetdir, args['label'] +
+                             "T2star_segment_stderr.nii.gz")
+        nib.save(nib.Nifti1Image(stderr_T2star_per_segment,
+                                 hdr_stat.get_sform(), hdr_stat), fname)
+        _status("SUCCESS: An image of the standard errors of cardiac "
+                "segment-specific mean T2* values was successfully saved to "
+                "'{}'.".format(fname), args)
+    except:
+        _status("ERROR: An image of the standard errors of cardiac "
+                "segment-specific mean T2* values could not be saved to '{}'."
+                .format(fname), args)
+        # Try to save as many as possible
+        pass
 
 
 # Program execution starts here

@@ -193,7 +193,7 @@ def config_file_parser(config_file_path):
 
 
     # Create argument dictionary from argument flags without the leading '-'
-    CLFLAGS_inverse = inv_map = {v[1:]: k for k, v in CLFLAGS.iteritems()}
+    CLFLAGS_inverse = {v[1:]: k for k, v in CLFLAGS.iteritems()}
 
     for line in lines:
         # Discard whitespace (space, tab)
@@ -218,26 +218,29 @@ def config_file_parser(config_file_path):
 
     # Set argument types for floating-point inputs
     for key in FLOAT_ARGS:
-        try:
-            args[key] = [float(val) for val in args[key]]
-        except:
-            raise TypeMismatchException("Invalid input for argument {}"
-                                        .format(CLFLAGS[key]))
+        if args[key]:
+            try:
+                args[key] = [float(val) for val in args[key]]
+            except:
+                raise TypeMismatchException("Invalid input for argument {}"
+                                            .format(CLFLAGS[key]))
     # Set argument types for integer inputs
     for key in INT_ARGS:
-        try:
-            args[key] = [int(val) for val in args[key]]
-        except:
-            raise TypeMismatchException("Invalid input for argument {}"
-                                        .format(CLFLAGS[key]))
+        if args[key]:
+            try:
+                args[key] = [int(val) for val in args[key]]
+            except:
+                raise TypeMismatchException("Invalid input for argument {}"
+                                            .format(CLFLAGS[key]))
 
     # Set argument types for boolean inputs
     for key in BOOL_ARGS:
-        try:
-            args[key] = [eval(str(val).title()) for val in args[key]]
-        except:
-            raise TypeMismatchException("Invalid input for argument {}"
-                                        .format(CLFLAGS[key]))
+        if args[key]:
+            try:
+                args[key] = [eval(str(val).title()) for val in args[key]]
+            except:
+                raise TypeMismatchException("Invalid input for argument {}"
+                                            .format(CLFLAGS[key]))
 
     # Just like in parse_arguments, count the inputs and validate the integrity
     # of input counts here.
@@ -694,16 +697,15 @@ def main():
                     getattr(csfmri_tasks, task)(current_args)
                 except:
                     # TODO: Add proper exception handling
-                    csfmri_tasks._status("ERROR while performing task {} on input "
-                                         "No. {} ('{}')".format(str(task), i,
-                                         current_args[current_args['inputkey']]),
-                                         current_args)
+                    csfmri_tasks._status("ERROR while performing task {} on "
+                        "input No. {} ('{}')".format(str(task), i,
+                        current_args[current_args['inputkey']]), current_args)
                     continue
 
     # IV. Create output
 
     # V. Report results
-
+    print ("All tasks have been successfully completed.")
 
 # Main program execution starts here
 if __name__ == "__main__":
