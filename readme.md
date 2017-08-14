@@ -1,5 +1,5 @@
 # Cardio-Synchronous fMRI (CSfMRI) Project's scripts
-# Readme
+
 
 ## Script files
 
