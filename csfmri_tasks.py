@@ -1784,7 +1784,7 @@ def multi_echo_analysis(args):
             mean_signal_by_segment[coords[:3] + (segment_no,)] \
                 = np.nanmean(tmp, axis=-1)[coords[:3]]
             tmp2 = np.nanstd(tmp, axis=-1) / \
-                   np.count_nonzero(~np.isnan(tmp), axis=-1)
+                   np.sqrt(np.count_nonzero(~np.isnan(tmp), axis=-1))
             del tmp
             stderr_signal_by_segment[coords[:3] + (segment_no,)] = \
                 tmp2[coords[:3]]
