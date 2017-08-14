@@ -1844,6 +1844,8 @@ def multi_echo_analysis(args):
         del tmp2
         tmp = np.full(echos_shape[:-1], np.nan)
         tmp[coords] = T2star[coords]
+        tmp[tmp < 0] = np.nan
+        tmp[np.isinf(tmp)] = np.nan
         mean_T2star_per_segment[coords[:3] + (segment_no,)] = \
             np.nanmean(tmp, axis=-1)[coords[:3]]
         tmp2 = np.nanstd(tmp, axis=-1) / \
