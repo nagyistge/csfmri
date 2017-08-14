@@ -9,6 +9,9 @@
 ### csfmri_tasks.py
    Implementation of the individual tasks that are called by main.py. Tasks include creating directory tree, creating or loading field map, running fsl_anat and feat (or loading the respective directories from a previous run), padding volumes, single-echo analysis, multi-echo analysis, etc.
 
+### cardioresp_GLM.py
+   Implements the GLMObject that carries out the iterative, intelligent linear model fitting. (Object-oriented equivalent to the original DualRegressionLoop.m).
+
 ### csfmri_exceptions.py
    A few customised exception classes. Mainly for future use.
 
