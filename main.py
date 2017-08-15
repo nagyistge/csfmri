@@ -15,11 +15,20 @@
 # Date: 2017-Jul-29                                                            #
 ################################################################################
 
+# IMPORTS
+
+import os
+from cl_interface import *
+from csfmri_tasks import TASK_LIST, TASK_ORDER
+import csfmri_tasks
+from csfmri_exceptions import *
+from collections import OrderedDict
+
+
 # DESCRIPTION
 
 # FIXME: Extend on the introduction and on the rules, as in the notes.
-usermanual = \
-"""
+usermanual = """
 The CSFMRI (cardio-synchronous fRMI) Analysis Tool provides robust functionality
 for the analysis of fMRI signals at the cardiac frequency.
 
@@ -74,17 +83,6 @@ Prerequisite:
    
    """
 
-# IMPORTS
-
-import sys
-import os
-from cl_interface import *
-from csfmri_utils import *
-import subprocess
-from csfmri_tasks import TASK_LIST, TASK_ORDER
-import csfmri_tasks
-from collections import OrderedDict
-
 
 # DEFINITIONS AND CODE
 
@@ -126,8 +124,8 @@ EXPLICIT_ARGS = {"bids_dirs"}
 # Arguments by type
 # FIXME: This could be done more elegantly.
 STRING_ARGS = {"id", "bids_dirs", "struct", "anatdir", "single_echo", "sref",
-                "stime", "sfeat", "sbio", "multi_echo", "mref", "mtime", "mbio",
-                "fmap", "fmag", "fphase", "log"}
+               "stime", "sfeat", "sbio", "multi_echo", "mref", "mtime", "mbio",
+               "fmap", "fmag", "fphase", "log"}
 FLOAT_ARGS = {"sfmin", "spval", "sconv", "echodiff", "fractint", "sfreq"}
 INT_ARGS = {"cseg", "cpu"}
 BOOL_ARGS = {"copy", "auto", "verbose"}
@@ -190,7 +188,6 @@ def config_file_parser(config_file_path):
     # Discard comment lines and lines without assignment
     lines = [line for line in lines
              if (not line.startswith("#")) and (line.find("=") != -1)]
-
 
     # Create argument dictionary from argument flags without the leading '-'
     CLFLAGS_inverse = {v[1:]: k for k, v in CLFLAGS.iteritems()}
@@ -384,7 +381,7 @@ def task_selector(args):
 
     # Define boolean task dictionary (this will be returned)
     tasks = OrderedDict(zip(zip(
-        *sorted([(v, k) for (k,v) in TASK_ORDER.iteritems()]))[1],
+        *sorted([(v, k) for (k, v) in TASK_ORDER.iteritems()]))[1],
                             [None] * len(TASK_LIST)))
 
     # Load FSL
@@ -456,11 +453,9 @@ def task_selector(args):
     # and brain-extracted structural scan (from fsl_anat). Finally, it requires
     # the cheating EV file.
     tasks['run_feat'] = tasks['pad_single_echo'] and \
-                        (tasks['create_field_map'] or
-                         tasks['load_field_map']) and \
-                        (tasks['run_fsl_anat'] or
-                         tasks['load_fsl_anatdir']) and \
-                        tasks['create_cheating_ev']
+        (tasks['create_field_map'] or tasks['load_field_map']) and \
+        (tasks['run_fsl_anat'] or tasks['load_fsl_anatdir']) and \
+        tasks['create_cheating_ev']
 
     # Load the results of a previous FEAT session
     # NOTE: As we use FEAT for the single-echo data, I set the requirements so.
@@ -473,7 +468,7 @@ def task_selector(args):
 
     # Load physiological signal recordings (from BioPac)
     tasks['load_biodata'] = check_requirements({"sbio"}, args) or \
-                            check_requirements({"mbio"}, args)
+        check_requirements({"mbio"}, args)
 
     # Run analysis on the single-echo data
     # Beyond the obvious input files, the analysis requires the results from
@@ -481,10 +476,8 @@ def task_selector(args):
     reqs = {"id", "single_echo", "sref", "stime", "sfmin", "spval", "sconv",
             "sbio", "sfreq"}
     tasks['single_echo_analysis'] = check_requirements(reqs, args) and \
-                                    (tasks['run_fsl_anat'] or
-                                     tasks['load_fsl_anatdir']) and \
-                                    (tasks['run_feat'] or
-                                     tasks['load_featdir'])
+        (tasks['run_fsl_anat'] or tasks['load_fsl_anatdir']) and \
+        (tasks['run_feat'] or tasks['load_featdir'])
 
     # Prepare multi-echo data (sorting echos and motion correction)
     # Beyond the obvious input files, the preparation requires the padded
@@ -591,7 +584,6 @@ def summarize(args):
             # Create a copy to transfer the universal argument values
             current_corresponding_args = arg_set.copy()
 
-
             # Equate the length of different argument value listings by adding
             # None-s.
             for key in current_corresponding_args.keys():
@@ -619,9 +611,8 @@ def summarize(args):
     # CREATE LIST OF TASK LISTS (corresponding to the dictionaries in args_list)
     print corresponding_args_list
     tasks_list = [task_selector(corresponding_args)
-                 for _, corresponding_args
-                 in enumerate(corresponding_args_list)]
-
+                  for _, corresponding_args
+                  in enumerate(corresponding_args_list)]
 
     # DISPLAY SUMMARY IN INTERACTIVE MODE
     if args['auto']:
@@ -702,15 +693,17 @@ def main():
                     getattr(csfmri_tasks, task)(current_args)
                 except:
                     # TODO: Add proper exception handling
-                    csfmri_tasks._status("ERROR while performing task {} on "
-                        "input No. {} ('{}')".format(str(task), i,
-                        current_args[current_args['inputkey']]), current_args)
+                    # noinspection PyProtectedMember
+                    csfmri_tasks._status(
+                        "ERROR while performing task {} on input No. {} ('{}')"
+                        .format(str(task), i, current_args['id']), current_args)
                     continue
 
     # IV. Create output
 
     # V. Report results
     print ("All tasks have been successfully completed.")
+
 
 # Main program execution starts here
 if __name__ == "__main__":

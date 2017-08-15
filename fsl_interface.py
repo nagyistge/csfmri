@@ -55,7 +55,7 @@ def get_fsldir():
                                  "be located on the computer.")
 
 
-def check_fsl_components(fsldir, components="fsl", bindir="bin"):
+def check_fsl_components(fsldir, components={"fsl"}, bindir="bin"):
     """Checks whether the requested FSL tools can be found in the FSL
     installation directory."""
     if type(components) != set:
@@ -67,3 +67,9 @@ def check_fsl_components(fsldir, components="fsl", bindir="bin"):
     else:
         return False
 
+
+# Display information if accidentally executed
+if __name__ == "__main__":
+    print ("{} is not intended for execution."
+           .format(os.path.basename(__file__)))
+    exit(0)

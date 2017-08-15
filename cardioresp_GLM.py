@@ -15,7 +15,17 @@
 # Date: 2017-Aug-02                                                            #
 ################################################################################
 
+# IMPORTS
+
+from cl_interface import *
+from csfmri_exceptions import *
+import numpy as np
+from sklearn import linear_model
+from scipy import stats
+
+
 # DESCRIPTION
+
 # FIXME: Make this module also executable. Update the user information as well.
 
 usermanual = \
@@ -53,13 +63,6 @@ usermanual = \
                         3: Refined baseline power spectrum
     """
 
-# IMPORTS
-
-from cl_interface import *
-from csfmri_exceptions import *
-import numpy as np
-from sklearn import linear_model
-from scipy import stats
 
 # DEFINITIONS AND CODE
 
@@ -95,6 +98,9 @@ class LinearRegression(linear_model.LinearRegression):
             kwargs['fit_intercept'] = False
         super(LinearRegression, self)\
             .__init__(*args, **kwargs)
+        # Note: the following will be calculated by self.fit()
+        self.t = None
+        self.p = None
 
     def fit(self, X, y, n_jobs=1):
         self = super(LinearRegression, self).fit(X, y, n_jobs)
@@ -118,6 +124,15 @@ class GLMObject:
     # Constructor
     def __init__(self, EV_, signal_, sfreq_=1, fmin_=0, pval_=0.05,
                  clevel_=0.1):
+        # Private
+        self.__signal = None
+        self.__EV = None
+        self.__sfreq = None
+        self.__fmin = None
+        self.__pval = None
+        self.__clevel = None
+
+        # Public
         self.signal = signal_
         self.EV = EV_
         self.sfreq = sfreq_
@@ -230,11 +245,11 @@ class GLMObject:
             return fft_freq, fft_result
 
     @staticmethod
-    def _repair(values, nan_val=0, inf_val=0, neginf_val=0):
+    def _repair(values, nan_val=0, posinf_val=0, neginf_val=0):
         """Changes invalid values to a pre-specified numerical value."""
-        values[np.isnan(values)] = 0
-        values[np.isinf(values)] = 0
-        values[np.isneginf(values)] = 0
+        values[np.isnan(values)] = nan_val
+        values[np.isposinf(values)] = posinf_val
+        values[np.isneginf(values)] = neginf_val
         return values
 
     def fit(self, n_jobs_=-1, total_n_EVs=None, iterations=True, normalize=True,
@@ -279,8 +294,8 @@ class GLMObject:
             fft_signals = GLMObject._repair(fft_signals)
 
             fft_EVs = fft_EVs / \
-                      np.repeat(np.sum(fft_EVs, axis=0)[np.newaxis, :],
-                                fft_EVs.shape[0], axis=0)
+                np.repeat(np.sum(fft_EVs, axis=0)[np.newaxis, :],
+                          fft_EVs.shape[0], axis=0)
             fft_EVs = GLMObject._repair(fft_EVs)
 
         # Discard any false signals (all zero over time, like background)
@@ -339,7 +354,7 @@ class GLMObject:
 
             # Perform the initial GLM.
             initial_glm = LinearRegression(n_jobs=n_jobs_)\
-                          .fit(fft_EVs_initial, fft_signals_nonzero.T)
+                .fit(fft_EVs_initial, fft_signals_nonzero.T)
             if verbose:
                 print ("Initial GLM fit finished.")
 

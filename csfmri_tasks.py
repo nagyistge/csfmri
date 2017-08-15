@@ -15,26 +15,6 @@
 # Date: 2017-Aug-06                                                            #
 ################################################################################
 
-# DESCRIPTION
-
-usermanual = \
-    """This Python module contains the modular implementations of all analysis 
-    tasks related to the CSFMRI project. This module is not intended for direct 
-    execution from the command line."""
-
-
-# DEVELOPMENT INFO
-
-"""All public functions in this module import args, add their task-specific 
-information to it and return it to the main process. When the next task is 
-executed, the args dictionary already contains information provided by previous 
-tasks. This chain-like modular design must be reconsidered for optimising 
-performance by parallel execution of certain independent tasks.
-
-The module contains a few private functions; these are indicated with a leading 
-single underscore."""
-
-
 # IMPORTS
 
 import numpy as np
@@ -54,6 +34,26 @@ import glob
 from sklearn.cluster import KMeans
 import peakutils
 import copy
+
+
+# DESCRIPTION
+
+usermanual = \
+    """This Python module contains the modular implementations of all analysis 
+    tasks related to the CSFMRI project. This module is not intended for direct 
+    execution from the command line."""
+
+
+# DEVELOPMENT INFO
+
+"""All public functions in this module import args, add their task-specific 
+information to it and return it to the main process. When the next task is 
+executed, the args dictionary already contains information provided by previous 
+tasks. This chain-like modular design must be reconsidered for optimising 
+performance by parallel execution of certain independent tasks.
+
+The module contains a few private functions; these are indicated with a leading 
+single underscore."""
 
 
 # DEFINITIONS AND CODE
@@ -93,11 +93,11 @@ TASK_LIST = set(TASK_ORDER.keys())
 FMAP_DIR = "fmap"   # for field map and related images
 ANAT_DIR = "anat"   # for structural image (not the output of fsl_anat!)
 FUNC_DIR = "func"   # for the functional image(s) and reference image(s)
-FEAT_DIR = "singleecho" # base name for feat directory
+FEAT_DIR = "singleecho"  # base name for feat directory
 MASK_DIR = "masks"  # for the eroded brain masks (single-echo analysis)
 BIO_DIR = "bio"     # for the biopac recordings
 RESULTS_DIR = "results"     # output directory for single-echo and multi-echo
-                            # analyses
+#                             analyses
 
 # Default file name tags (the prefix is the subjectID stored in args['label'])
 # FIXME: Hard coding the extension is bad practice.
@@ -539,7 +539,7 @@ def _parse_bio_file(bio_file, args, column_order=BIOFILE_COLUMN_ORDER):
         # order from left to right: trigger, cardiac, respiratory.
         # (This is a built-in convention.)
         biodata = \
-            biodata[:,np.array((column_order['trigger'],
+            biodata[:, np.array((column_order['trigger'],
                                 column_order['cardiac'],
                                 column_order['respiratory']))]
 
@@ -559,18 +559,19 @@ def _find_peaks(signal, minsep=None):
 
     if minsep is None:
         # Run FFT on the signal
-        # Note that frequency scale is arbitrary.
+        # Note that the frequency scale has been normalised so that it does not
+        # depend on the exact value of the biopac's sampling interval.
         fft_signal = np.abs(np.fft.rfft(_signal))
-        fft_freqs = np.fft.rfftfreq(_signal.size, 1)
+        fft_freqs = np.fft.rfftfreq(_signal.size, 1)    # here
 
         # Find dominant Fourier component
         fft_max_freq = fft_freqs[np.argmax(fft_signal)]
-        minsep = round(1.0 / fft_max_freq * 2/3.0)
+        minsep = int(round(1.0 / fft_max_freq * 2/3.0))      # and here
     else:
         try:
-            minsep = float(minsep)
+            minsep = int(round(minsep))
         except:
-            raise ValueError("The minsep argument must be real-valued.")
+            raise ValueError("The minsep argument must be an integer.")
 
     # Find peaks
     peak_indices = peakutils.indexes(_signal, thres=0.02 / max(_signal),
@@ -624,7 +625,8 @@ def create_bids_dirs(args):
                         _mkdir_p(dirname)
                     else:
                         _status("WARNING: '{}' was not created."
-                               .format(os.path.join(args['id'], dirname)), args)
+                                .format(os.path.join(args['id'], dirname)),
+                                args)
                         continue
                 else:
                     _mkdir_p(dirname)
@@ -1124,8 +1126,7 @@ def run_fsl_anat(args):
             _run(anatcmd, args, bg=False)
             # Update the fsl_anat directory information in the program argument
             # dictionary
-            new_anat = os.path.join(args['id'], STRUCT_BASE_NAME +
-                                           ".anat")
+            new_anat = os.path.join(args['id'], STRUCT_BASE_NAME + ".anat")
             if os.path.isdir(new_anat):
                 args['anatdir'] = new_anat
                 _status("Path to the .anat directory was set to {}"
@@ -1133,7 +1134,7 @@ def run_fsl_anat(args):
             else:
                 _status("ERROR: Path to the .anat directory could not be set "
                         "after running fsl_anat.", args)
-        except NothingDoneException as exc:
+        except NothingDoneException:
             # FIXME: Add exception handling
             raise
 
@@ -1205,8 +1206,9 @@ def run_feat(args):
          "$DT": args['echodiff'],
          "$TE": TE,
          "$SMOOTH": 0.0,
-         "$STANDARD": "\"" + os.path.join(args['fsldir'], "data/standard/"
-                      "MNI152_T1_2mm_brain") + "\"",
+         "$STANDARD":
+             "\"" + os.path.join(args['fsldir'],
+                                 "data/standard/MNI152_T1_2mm_brain") + "\"",
          "$VOXELS": np.prod(single_echo_shape),
          "$FUNC": "\"" + args['single_echo_pad'] + "\"",
          "$REF": "\"" + args['sref_pad'] + "\"",
@@ -1225,8 +1227,19 @@ def run_feat(args):
 
     # Run FEAT in the background
     featcmd = [os.path.join(args['fsldir'], "bin/feat"),
-                            os.path.realpath(current_fsf_path)]
+               os.path.realpath(current_fsf_path)]
     _run(featcmd, args, bg=True)
+
+    # Update the feat directory in the program argument dictionary
+    featdir = os.path.join(args['id'], FEAT_DIR + ".feat")
+    if os.path.isdir(featdir):
+        args['sfeat'] = featdir
+    else:
+        msg = "Path to the FEAT output directory could not be set to '{}' " \
+              "after running FEAT. Please re-run the program and load the " \
+              "FEAT directory manually.".format(featdir)
+        _status(msg, args)
+        raise GenericIOException(msg)
 
 
 def load_featdir(args):
@@ -1407,7 +1420,7 @@ def single_echo_analysis(args):
         # Introduce variables for better readability
         TR = timing['TR']
         SS = int(round(timing['SS']))
-        TE = timing['TE']
+        # TE = timing['TE']
         if timing['PADDED']:
             ST = timing['ST']
         else:
@@ -1430,8 +1443,9 @@ def single_echo_analysis(args):
 
     samples_per_ms = args['sfreq'] / 1000.0
     samples_per_TR = int(round(samples_per_ms * timing['TR']))
-    trigger_threshold = np.mean(KMeans(n_clusters=2)
-                        .fit(biodata[:, 0].reshape(-1, 1)).cluster_centers_)
+    trigger_threshold = \
+        np.mean(KMeans(n_clusters=2).fit(biodata[:, 0].reshape(-1, 1))
+                .cluster_centers_)
     trigger_duration = TRIGGER_DURATION * samples_per_ms
     trigger_on = np.where(biodata[:, 0] > trigger_threshold)[0]
     ss_begins = int(ceil(np.min(trigger_on) +
@@ -1469,8 +1483,8 @@ def single_echo_analysis(args):
         raise
 
     # Obtain respiratory and cardiac maps
-    coef_initial = coef_initial.reshape(residuals_shape[:3] +
-                                        (fft_EVs.shape[-1],))
+    coef_initial = \
+        coef_initial.reshape(residuals_shape[:3] + (fft_EVs.shape[-1],))
     respiratory_map = coef_initial[:, :, :, 1]
     respiratory_map[respiratory_map < 0] = 0
     cardiac_map = coef_initial[:, :, :, 2]
@@ -1481,13 +1495,13 @@ def single_echo_analysis(args):
     if not os.path.isdir(targetdir):
         _mkdir_p(targetdir)
     args['resultsdir'] = targetdir
-
-    brain_mask = os.path.join(args['maskdir'], struct_base_name +
-                              "2func.nii.gz")
+    brain_mask = \
+        os.path.join(args['maskdir'], struct_base_name + "2func.nii.gz")
     hdr = nib.load(brain_mask).header
+
+    cardmap_path = \
+        os.path.join(args['resultsdir'], args['label'] + CARDMAP_TAG)
     try:
-        cardmap_path = os.path.join(args['resultsdir'], args['label'] +
-                                    CARDMAP_TAG)
         nib.save(nib.Nifti1Image(cardiac_map, hdr.get_sform(), hdr),
                  cardmap_path)
         _status("SUCCESS: The cardiac map was successfully saved to '{}'."
@@ -1498,16 +1512,16 @@ def single_echo_analysis(args):
         # TODO: Add exception handling
         raise
 
+    respmap_path = \
+        os.path.join(args['resultsdir'], args['label'] + RESPMAP_TAG)
     try:
-        respmap_path = os.path.join(args['resultsdir'], args['label'] +
-                                    RESPMAP_TAG)
         nib.save(nib.Nifti1Image(respiratory_map, hdr.get_sform(), hdr),
                  respmap_path)
         _status("SUCCESS: The respiratory map was successfully saved to '{}'."
                 .format(respmap_path), args)
     except:
-        _status("ERROR: The cardiac map could not be saved to '{}'."
-                .format(cardmap_path), args)
+        _status("ERROR: The respiratory map could not be saved to '{}'."
+                .format(respmap_path), args)
         # TODO: Add exception handling
         raise
 
@@ -1539,11 +1553,12 @@ def single_echo_analysis(args):
         phasediff_multiband[:, :, slice_no] = \
             (ST[slice_no] - ST[z]) / 1000.0 * dom_card_freq * 2*np.pi
 
-    phase_voxels = np.fft.rfft(residuals[:,:,:,SS:], axis=-1)
-    freq_index_from_zero = phase_voxels.shape[-1] - fft_voxels.shape[-1] + \
-                           dom_card_freq_index
-    phase_map = np.angle(ref_phase / phase_voxels[:,:,:,freq_index_from_zero]) \
-                + phasediff_multiband
+    phase_voxels = np.fft.rfft(residuals[:, :, :, SS:], axis=-1)
+    freq_index_from_zero = \
+        phase_voxels.shape[-1] - fft_voxels.shape[-1] + dom_card_freq_index
+    phase_map = \
+        np.angle(ref_phase / phase_voxels[:, :, :, freq_index_from_zero]) \
+        + phasediff_multiband
 
     # Express phase in (-pi, pi)
     phase_map[phase_map > np.pi] = -2 * np.pi + phase_map[phase_map > np.pi]
@@ -1554,8 +1569,8 @@ def single_echo_analysis(args):
 
     # Save phase map
     try:
-        phasemap_path = os.path.join(args['resultsdir'], args['label'] +
-                                    PHASEMAP_TAG)
+        phasemap_path = \
+            os.path.join(args['resultsdir'], args['label'] + PHASEMAP_TAG)
         nib.save(nib.Nifti1Image(phase_map, hdr.get_sform(), hdr),
                  phasemap_path)
         _status("SUCCESS: The phase map was successfully saved to '{}'."
@@ -1570,7 +1585,7 @@ def single_echo_analysis(args):
     # TODO: This feature will be added later.
 
     # Update status
-    _status("SUCCESS: Single-echo analysis was completed successfully.")
+    _status("SUCCESS: Single-echo analysis was completed successfully.", args)
 
 
 def prepare_multi_echo(args):
@@ -1641,7 +1656,7 @@ def prepare_multi_echo(args):
     if do_separation:
         for i, echo_name in enumerate(echo_names):
             # Get corresponding echos from consecutive TRs
-            current_echo_series = mimg[:,:,:,i::n_echos]
+            current_echo_series = mimg[:, :, :, i::n_echos]
             # Manipulate header to fit the new data
             hdr.set_data_shape(current_echo_series.shape)
             # Save the current echo into file
@@ -1786,7 +1801,7 @@ def multi_echo_analysis(args):
     echos_exist = [os.path.isfile(echo) for echo in args['echo_files']]
     if not all(echos_exist):
         msg = "The following echo file(s) could not be found: {}"\
-              .format("\n".join(args['echo_files'][echos_exist == False]))
+              .format("\n".join(args['echo_files'][echos_exist is False]))
         _status(msg, args)
         raise NotFoundException(msg)
     try:
@@ -1825,8 +1840,8 @@ def multi_echo_analysis(args):
 
     # Create an array that stores the echo signals' coincidence with cardiac
     # cycle segments.
-    all_echos_segmented = np.zeros(echos_shape[:3] + (echos_shape[3],) +
-                                   (echos_shape[-1],))
+    all_echos_segmented = \
+        np.zeros(echos_shape[:3] + (echos_shape[3],) + (echos_shape[-1],))
     all_echotrains_segmented = np.zeros(echos_shape[:3] + (echos_shape[3],))
 
     for repeat_no in range(SS, echos_shape[-2]):
@@ -1840,8 +1855,8 @@ def multi_echo_analysis(args):
                     = card_segment_mask[index]
 
         # Calculate the segments for echo trains
-        index_base = (TE[0] + np.mean(TE) + (repeat_no-SS) * TR) \
-                     * samples_per_ms
+        index_base = \
+            (TE[0] + np.mean(TE) + (repeat_no-SS) * TR) * samples_per_ms
         for slice_no in range(echos_shape[2]):
             index = int(round(index_base + ST[slice_no]))
             all_echotrains_segmented[:, :, slice_no, repeat_no] = \
@@ -1874,8 +1889,9 @@ def multi_echo_analysis(args):
             tmp[coords] = all_echos[coords + (echo_no,)]
             mean_signal_by_segment[coords[:3] + (segment_no,)] \
                 = np.nanmean(tmp, axis=-1)[coords[:3]]
-            tmp2 = np.nanstd(tmp, axis=-1) / \
-                   np.sqrt(np.count_nonzero(~np.isnan(tmp), axis=-1))
+            tmp2 = \
+                np.nanstd(tmp, axis=-1) / \
+                np.sqrt(np.count_nonzero(~np.isnan(tmp), axis=-1))
             del tmp
             stderr_signal_by_segment[coords[:3] + (segment_no,)] = \
                 tmp2[coords[:3]]
@@ -1928,8 +1944,9 @@ def multi_echo_analysis(args):
         tmp[coords] = S0[coords]
         mean_S0_per_segment[coords[:3] + (segment_no,)] = \
             np.nanmean(tmp, axis=-1)[coords[:3]]
-        tmp2 = np.nanstd(tmp, axis=-1) / \
-               np.sqrt(np.count_nonzero(~np.isnan(tmp), axis=-1))
+        tmp2 = \
+            np.nanstd(tmp, axis=-1) / \
+            np.sqrt(np.count_nonzero(~np.isnan(tmp), axis=-1))
         del tmp
         stderr_S0_per_segment[coords[:3] + (segment_no,)] = tmp2[coords[:3]]
         del tmp2
@@ -1939,8 +1956,9 @@ def multi_echo_analysis(args):
         tmp[np.isinf(tmp)] = np.nan
         mean_T2star_per_segment[coords[:3] + (segment_no,)] = \
             np.nanmean(tmp, axis=-1)[coords[:3]]
-        tmp2 = np.nanstd(tmp, axis=-1) / \
-               np.sqrt(np.count_nonzero(~np.isnan(tmp), axis=-1))
+        tmp2 = \
+            np.nanstd(tmp, axis=-1) / \
+            np.sqrt(np.count_nonzero(~np.isnan(tmp), axis=-1))
         del tmp
         stderr_T2star_per_segment[coords[:3] + (segment_no,)] = tmp2[coords[:3]]
         del tmp2
@@ -2009,4 +2027,4 @@ def multi_echo_analysis(args):
 # Program execution starts here
 if __name__ == "__main__":
     print usermanual
-    exit(1)
+    exit(0)

@@ -14,12 +14,20 @@
 # Date: 2017-Jul-29
 ################################################################################
 
+# IMPORTS
+
+import sys
+import os
+
+
+# DESCRIPTION
+
 """This Python module provides basic functionality for handling command-line
 arguments and user input. It is assumed that all arguments are unique and all
 begin with at least one '-'."""
 
-import sys
 
+# DEFINITIONS AND CODE
 
 def check_invalid_arguments(valid_args):
     """Returns a list of invalid arguments. An argument is invalid when it is
@@ -92,3 +100,10 @@ def confirmed_to_proceed(msg="", forceanswer=True):
         sys.stdout.write("Please respond with 'yes' or 'no': ")
         choice = confirmed_to_proceed()
     return choice
+
+
+# Display information if accidentally executed
+if __name__ == "__main__":
+    print ("{} is not intended for execution."
+           .format(os.path.basename(__file__)))
+    exit(0)
