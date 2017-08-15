@@ -1682,12 +1682,13 @@ def prepare_multi_echo(args):
     # Check for existing motion-corrected echo files:
     echo_moco_names = [str(echo).replace(".nii.gz", "_moco.nii.gz")
                        for echo in echo_names]
-    run_moco = False
+    run_moco = True
     if all([os.path.isfile(echo) for echo in echo_moco_names]):
-        if args['auto'] or (not confirmed_to_proceed(
-                "Would you like to use the existing motion-corrected echo "
-                "images? (y/n): ", forceanswer=True)):
-            run_moco = True
+        if not args['auto']:
+            if confirmed_to_proceed("Would you like to use the existing "
+                                    "motion-corrected echo images? (y/n): ",
+                                    forceanswer=True):
+                run_moco = False
 
     if run_moco:
         first_echo_moco = echo_names[0].replace(".nii.gz", "_moco")
