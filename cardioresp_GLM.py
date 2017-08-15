@@ -1,4 +1,4 @@
-#!/Volumes/INH_1TB/CSFMRI/venv/venv_csfmri/bin/python
+#!/usr/bin/env python
 
 ################################################################################
 # This script was created part of the CSFMRI (cardio-synchronous fMRI) project #
