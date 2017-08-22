@@ -1530,10 +1530,10 @@ def single_echo_analysis(args):
     _status("Starting phase mapping...", args)
 
     # Obtain the dominant cardiac frequency
-    cardiac_spectrum = fft_EVs[:, 2]
-    respiratory_spectrum = fft_EVs[:, 1]
-    dom_card_freq_index = np.argmax(cardiac_spectrum[1:])
-    dom_card_freq = fft_freq_range[dom_card_freq_index]
+    cardiac_spectrum = coef_refined[:, 2]   # use refined spectrum (Olivia)
+    # respiratory_spectrum = coef_refined[:, 1] # unnecessary variable
+    dom_card_freq_index = np.argmax(cardiac_spectrum[1:]) # careful: losing 1st!
+    dom_card_freq = fft_freq_range[dom_card_freq_index + 1] # adding 1st back
     _status("The dominant cardiac frequency is {} Hz ({}/min)."
             .format(dom_card_freq, int(round(dom_card_freq*60))), args)
 
