@@ -34,6 +34,7 @@ import glob
 from sklearn.cluster import KMeans
 import peakutils
 import copy
+from scipy.ndimage.filters import gaussian_filter1d
 
 
 # DESCRIPTION
@@ -574,10 +575,31 @@ def _find_peaks(signal, minsep=None):
             raise ValueError("The minsep argument must be an integer.")
 
     # Find peaks
-    peak_indices = peakutils.indexes(_signal, thres=0.02 / max(_signal),
-                                     min_dist=minsep)
+    threshold = np.mean(_signal) + \
+                2 * np.std(_signal) / np.sqrt(np.count_nonzero(_signal))
+    threshold = \
+        (threshold - np.min(_signal)) / (np.max(_signal) - np.min(_signal))
+    peak_indices = \
+        peakutils.indexes(_signal, thres=threshold, min_dist=minsep)
 
     return np.array(peak_indices)
+
+
+def _filter_rf(signal, sfreq, TR):
+    """Eliminates RF modulation from cardiac signal"""
+
+    fftfreq = np.fft.rfftfreq(signal.size, 1.0/sfreq)
+    fft = np.fft.rfft(signal)
+    i = 1
+    precision = sfreq/2.0/signal.size
+    while True:
+        freq = 1000.0/TR * i
+        fft[np.where(np.abs(fftfreq - freq) <= 2 * precision)] = 0
+        i += 1
+        if freq > sfreq/2.0:
+            break
+
+    return np.fft.irfft(fft)
 
 
 def load_fsl(args):
@@ -1759,6 +1781,12 @@ def multi_echo_analysis(args):
     scan_end = int(np.max(trigger_on[trigger_on > ss_begins]) + samples_per_TR
                    - trigger_duration)
     cardiac_signal = cardiac_signal[scan_start:scan_end]
+
+    # Remove RF modulation from cardiac signal
+    cardiac_signal = _filter_rf(cardiac_signal, args['sfreq'], TR)
+
+    # Remove mean variations from cardiac signal
+    cardiac_signal -= gaussian_filter1d(cardiac_signal, 1*args['sfreq'])
 
     # Find peaks (time points for peak arterial flow) in the cardiac signal
     card_peak_indices = _find_peaks(cardiac_signal)
