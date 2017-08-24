@@ -1464,14 +1464,13 @@ def single_echo_analysis(args):
     # fitting. Discard first few (timing['SS']) acquisitions until steady state.
 
     samples_per_ms = args['sfreq'] / 1000.0
-    samples_per_TR = int(round(samples_per_ms * timing['TR']))
+    samples_per_TR = int(round(samples_per_ms * TR))
     trigger_threshold = \
         np.mean(KMeans(n_clusters=2).fit(biodata[:, 0].reshape(-1, 1))
                 .cluster_centers_)
     trigger_duration = TRIGGER_DURATION * samples_per_ms
     trigger_on = np.where(biodata[:, 0] > trigger_threshold)[0]
-    ss_begins = int(ceil(np.min(trigger_on) +
-                         timing['SS'] * timing['TR'] * samples_per_ms))
+    ss_begins = int(ceil(np.min(trigger_on) + SS * TR * samples_per_ms))
     scan_start = int(np.min(trigger_on[trigger_on > ss_begins]))
     scan_end = int(np.max(trigger_on[trigger_on > ss_begins]) + samples_per_TR
                    - trigger_duration)
@@ -1552,7 +1551,7 @@ def single_echo_analysis(args):
     _status("Starting phase mapping...", args)
 
     # Obtain the dominant cardiac frequency
-    cardiac_spectrum = coef_refined[:, 2]   # use refined spectrum (Olivia)
+    cardiac_spectrum = fft_EVs[:, 2]   # this is the refined spectrum (Olivia)
     # respiratory_spectrum = coef_refined[:, 1] # unnecessary variable
     dom_card_freq_index = np.argmax(cardiac_spectrum[1:]) # careful: losing 1st!
     dom_card_freq = fft_freq_range[dom_card_freq_index + 1] # adding 1st back
@@ -1569,17 +1568,18 @@ def single_echo_analysis(args):
     # Calculate phase of the dominant cardiac frequency component in the
     # reference voxel
     x, y, z = ref_coords
-    ref_phase = np.fft.rfft(residuals[x, y, z, :])[dom_card_freq_index]
+    ref_freqs = np.fft.rfftfreq(residuals[x, y, z, SS:].size, TR/1000.0)
+    dom_card_freq_index = \
+        np.argmin(np.abs(ref_freqs - dom_card_freq)).astype(np.int64)
+    ref_phase = np.fft.rfft(residuals[x, y, z, SS:])[dom_card_freq_index]
     phasediff_multiband = np.zeros(residuals_shape[:-1])
     for slice_no in range(residuals_shape[2]):
         phasediff_multiband[:, :, slice_no] = \
             (ST[slice_no] - ST[z]) / 1000.0 * dom_card_freq * 2*np.pi
 
     phase_voxels = np.fft.rfft(residuals[:, :, :, SS:], axis=-1)
-    freq_index_from_zero = \
-        phase_voxels.shape[-1] - fft_voxels.shape[-1] + dom_card_freq_index
     phase_map = \
-        np.angle(ref_phase / phase_voxels[:, :, :, freq_index_from_zero]) \
+        np.angle(ref_phase / phase_voxels[:, :, :, dom_card_freq_index]) \
         + phasediff_multiband
 
     # Express phase in (-pi, pi)
