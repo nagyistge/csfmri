@@ -66,26 +66,27 @@ single underscore."""
 # the right.
 
 TASK_ORDER = {'load_fsl': 0,                     # startup.m
-              'create_bids_dirs': 1,             # CreateBIDSDirectories.m
-              'create_field_map': 2,             # FieldMapBIDS.m
-              'load_field_map': 3,               # (added extra functionality)
-              'copy_field_map_to_bids': 4,       # First_prepare.m
-              'copy_structural_to_bids': 5,      # First_prepare.m
-              'copy_single_echo_to_bids': 6,     # First_prepare.m
-              'copy_multi_echo_to_bids': 7,      # First_prepare.m
-              'create_cheating_ev': 8,           # First_prepare.m
-              'pad_single_echo': 9,              # First_prepare.m
-              'pad_multi_echo': 10,              # First_prepare.m
-              'run_fsl_anat': 11,                # First_prepare.m
-              'load_fsl_anatdir': 12,            # (added extra functionality)
-              'run_feat': 13,                    # (added extra functionality)
-              'load_featdir': 14,                # (added extra functionality)
-              'load_biodata': 15,
-              'single_echo_analysis': 16,        # Second_GLM.m,
+              'set_outputdir': 1,                # (added extra functionality)
+              'create_bids_dirs': 2,             # CreateBIDSDirectories.m
+              'create_field_map': 3,             # FieldMapBIDS.m
+              'load_field_map': 4,               # (added extra functionality)
+              'copy_field_map_to_bids': 5,       # First_prepare.m
+              'copy_structural_to_bids': 6,      # First_prepare.m
+              'copy_single_echo_to_bids': 7,     # First_prepare.m
+              'copy_multi_echo_to_bids': 8,      # First_prepare.m
+              'create_cheating_ev': 9,           # First_prepare.m
+              'pad_single_echo': 10,              # First_prepare.m
+              'pad_multi_echo': 11,              # First_prepare.m
+              'run_fsl_anat': 12,                # First_prepare.m
+              'load_fsl_anatdir': 13,            # (added extra functionality)
+              'run_feat': 14,                    # (added extra functionality)
+              'load_featdir': 15,                # (added extra functionality)
+              'load_biodata': 16,
+              'single_echo_analysis': 17,        # Second_GLM.m,
                                                  # DualRegressionLoop.m,
                                                  # PhaseMapping.m
-              'prepare_multi_echo': 17,          # MultiEchoMoCo.m
-              'multi_echo_analysis': 18,         # MultiEchoFitAndSort.m
+              'prepare_multi_echo': 18,          # MultiEchoMoCo.m
+              'multi_echo_analysis': 19,         # MultiEchoFitAndSort.m
               }
 
 TASK_LIST = set(TASK_ORDER.keys())
@@ -120,8 +121,6 @@ CARDMAP_TAG = "_cardmap.nii.gz"
 RESPMAP_TAG = "_respmap.nii.gz"
 PHASEMAP_TAG = "_phasemap.nii.gz"
 
-FPHASE_ECHO_DIFF = 2.46     # [ms]  typical for our SIEMENS 3T PRISMA scanner
-
 # Other built-in constants
 # Number of zero-slices used to pad each z-end of the NIfTI volumes
 N_PAD_SLICES = 2
@@ -135,6 +134,8 @@ BIOFILE_COLUMN_ORDER = {'respiratory':  0,
                         'sats':         3}
 # Trigger pulse width
 TRIGGER_DURATION = 70   # ms
+# Echo time difference in field map phasediff image
+FPHASE_ECHO_DIFF = 2.46     # [ms]  typical for our SIEMENS 3T PRISMA scanner
 
 
 def extract_subject_label(args):
@@ -350,7 +351,7 @@ def _copy(source, dest, args, key=None, description="file", msg_notfound=None,
         except GenericIOException:
             # Set the destination directory to the subject directory
             # (universally).
-            targetdir = args['id']
+            targetdir = args['outputdir']
             _status("The {} will be copied from '{}' to the subject directory: "
                     "'{}'".format(str(description).lower(), source, targetdir),
                     args)
@@ -619,6 +620,28 @@ def load_fsl(args):
             exit(1)
 
 
+def set_outputdir(args):
+    """Adds the optionally specified output subdirectory to the output path."""
+    try:
+        if args['outputdir'][0] is not None:
+            outputdir = str(args['outputdir'][0])
+        else:
+            outputdir = ""
+    except:
+        outputdir = ""
+    finally:
+        args['outputdir'] = os.path.join(args['id'], outputdir)
+        _status("The output directory was set to: '{}'"
+                .format(args['outputdir']), args)
+        try:
+            _mkdir_p(args['outputdir'])
+        except:
+            _status("ERROR while creating output directory at '{}'. The output "
+                    "directory was set to the current working directory: '{}'"
+                    .format(args['outputdir'], os.getcwd()), args)
+            args['outputdir'] = os.getcwd()
+
+
 def create_bids_dirs(args):
     """Creates the specified BIDS (Brain Imaging Data Structure) directories at
     the specified (subject) location. When the interactive option is True,
@@ -629,35 +652,35 @@ def create_bids_dirs(args):
     # sub-directories can be created. If the requested directory is not
     # accessible, set subject directory to the current working directory.
     try:
-        _secure_path(args['id'], args)
+        _secure_path(args['outputdir'], args)
     except GenericIOException:
-        args['id'] = os.getcwd()
+        args['outputdir'] = os.getcwd()
         _status("Subject directory was set to the current working directory: "
-                "'{}'".format(args['id']), args)
+                "'{}'".format(args['outputdir']), args)
 
     # Create directories
     # Avoid duplicates among BIDS directories
     bids_dirs = set(args['bids_dirs'])
+
     for dirname in bids_dirs:
         try:
-            dirname = os.path.abspath(os.path.join(args['id'], dirname))
+            dirname = \
+                os.path.abspath(os.path.join(args['outputdir'], dirname))
             if not os.path.isdir(dirname):
                 if not args['auto']:
                     if confirmed_to_proceed("CONFIRM: Creating '{}': "
-                       .format(os.path.join(args['id'], dirname)),
-                                            forceanswer=False):
+                       .format(dirname), forceanswer=False):
                         _mkdir_p(dirname)
                     else:
                         _status("WARNING: '{}' was not created."
-                                .format(os.path.join(args['id'], dirname)),
-                                args)
+                                .format(dirname), args)
                         continue
                 else:
                     _mkdir_p(dirname)
         except:
             # FIXME: Add exception handling
             _status("ERROR: The directory '{}' could not be created."
-                    .format(os.path.join(args['id'], dirname)), args)
+                    .format(dirname), args)
     else:
         _status("The BIDS directory tree was successfully created.", args)
 
@@ -674,9 +697,9 @@ def create_field_map(args):
 
     # Specify target directory
     try:
-        targetdir = _secure_path(os.path.join(args['id'], FMAP_DIR), args)
+        targetdir = _secure_path(os.path.join(args['outputdir'], FMAP_DIR), args)
     except:
-        targetdir = args['id']
+        targetdir = args['outputdir']
 
     if not args['copy']:
         # The brain-extracted magnitude image will have to be next to the
@@ -750,7 +773,7 @@ def load_field_map(args):
             _status("Field map was loaded from {}".format(args['fmap']), args)
         else:
             # Specify target directory (this is a built-in constant)
-            targetdir = os.path.join(args['id'], FMAP_DIR)
+            targetdir = os.path.join(args['outputdir'], FMAP_DIR)
 
             # Copy the file
             new_fmap = os.path.join(targetdir, args['label'] + FMAP_TAG)
@@ -773,7 +796,7 @@ def copy_structural_to_bids(args):
         pass
     else:
         # Specify target directory (this is a built-in constant)
-        targetdir = os.path.join(args['id'], ANAT_DIR)
+        targetdir = os.path.join(args['outputdir'], ANAT_DIR)
 
         # Copy the file
         new_struct = os.path.join(targetdir, args['label'] + ANAT_TAG)
@@ -799,7 +822,7 @@ def copy_single_echo_to_bids(args):
         pass
     else:
         # Specify target directory (this is a built-in constant)
-        targetdir = os.path.join(args['id'], FUNC_DIR)
+        targetdir = os.path.join(args['outputdir'], FUNC_DIR)
 
         # Copy the single-echo functional image
         new_secho = os.path.join(targetdir, args['label'] + SECHO_TAG)
@@ -848,7 +871,7 @@ def copy_multi_echo_to_bids(args):
         pass
     else:
         # Specify target directory (this is a built-in constant)
-        targetdir = os.path.join(args['id'], FUNC_DIR)
+        targetdir = os.path.join(args['outputdir'], FUNC_DIR)
 
         # Copy the multi-echo functional image
         new_mecho = os.path.join(targetdir, args['label'] + MECHO_TAG)
@@ -904,7 +927,7 @@ def create_cheating_ev(args):
                   .format(args['single_echo'])
             _status(msg, args)
             raise NIFTIException(msg)
-        fname = os.path.join(args['id'], args['label'] +
+        fname = os.path.join(args['outputdir'], args['label'] +
                              "_CheatingEV_SingleEcho_{}Vols.txt".format(vols))
         ev = np.zeros((vols, 1), dtype=np.int8)
         ev[0, 0] = 1
@@ -936,7 +959,7 @@ def create_cheating_ev(args):
                   .format(args['multi_echo'])
             _status(msg, args)
             raise NIFTIException(msg)
-        fname = os.path.join(args['id'], args['label'] +
+        fname = os.path.join(args['outputdir'], args['label'] +
                              "_CheatingEV_MultiEcho_{}Vols.txt".format(vols))
         ev = np.zeros((vols, 1), dtype=np.int8)
         ev[0, 0] = 1
@@ -1145,12 +1168,12 @@ def run_fsl_anat(args):
             args['fsldir'] = get_fsldir()
         anatcmd = [os.path.join(args['fsldir'], "bin/fsl_anat"),
                    "--nosubcortseg", "-i", args['struct'], "-o",
-                   os.path.join(args['id'], STRUCT_BASE_NAME)]
+                   os.path.join(args['outputdir'], STRUCT_BASE_NAME)]
         try:
             _run(anatcmd, args, bg=False)
             # Update the fsl_anat directory information in the program argument
             # dictionary
-            new_anat = os.path.join(args['id'], STRUCT_BASE_NAME + ".anat")
+            new_anat = os.path.join(args['outputdir'], STRUCT_BASE_NAME + ".anat")
             if os.path.isdir(new_anat):
                 args['anatdir'] = new_anat
                 _status("Path to the .anat directory was set to {}"
@@ -1184,7 +1207,7 @@ def run_feat(args):
 
     # Create copy of template design file and edit it accordingly
     fsf_template_path = os.path.join(args['progdir'], "templates/feat.fsf")
-    current_fsf_path = os.path.join(args['id'], "feat_design.fsf")
+    current_fsf_path = os.path.join(args['outputdir'], "feat_design.fsf")
     if not os.path.isfile(fsf_template_path):
         raise ImportError("FEAT configuration file (.fsf) template could not "
                           "be loaded from {}".format(fsf_template_path))
@@ -1224,7 +1247,7 @@ def run_feat(args):
 
     # Gather all information
     fsfdata = \
-        {"$OUTPUTDIR": "\"" + os.path.join(args['id'], FEAT_DIR) + "\"",
+        {"$OUTPUTDIR": "\"" + os.path.join(args['outputdir'], FEAT_DIR) + "\"",
          "$TR": TR/1000.0,
          "$VOLUMES": single_echo_shape[3],
          "$DT": args['echodiff'],
@@ -1255,7 +1278,7 @@ def run_feat(args):
     _run(featcmd, args, bg=True)
 
     # Update the feat directory in the program argument dictionary
-    featdir = os.path.join(args['id'], FEAT_DIR + ".feat")
+    featdir = os.path.join(args['outputdir'], FEAT_DIR + ".feat")
     if os.path.isdir(featdir):
         args['sfeat'] = featdir
     else:
@@ -1294,7 +1317,7 @@ def load_biodata(args):
                 _status("Path to the physiological data file (single-echo "
                         "scan) was set to '{}'".format(args['sbio']), args)
             else:
-                targetdir = os.path.join(args['id'], BIO_DIR)
+                targetdir = os.path.join(args['outputdir'], BIO_DIR)
                 if not os.path.isdir(targetdir):
                     _mkdir_p(targetdir)
                 new_sbio = os.path.join(targetdir, args['label'] + SBIO_TAG)
@@ -1317,7 +1340,7 @@ def load_biodata(args):
                 _status("Path to the physiological data file (multi-echo "
                         "scan) was set to '{}'".format(args['mbio']), args)
             else:
-                targetdir = os.path.join(args['id'], BIO_DIR)
+                targetdir = os.path.join(args['outputdir'], BIO_DIR)
                 if not os.path.isdir(targetdir):
                     _mkdir_p(targetdir)
                 new_mbio = os.path.join(targetdir, args['label'] + MBIO_TAG)
@@ -1339,7 +1362,7 @@ def single_echo_analysis(args):
     _status("Starting single-echo analysis...", args)
 
     # Create BIDS sub-directory for masks
-    maskdir = os.path.join(args['id'], MASK_DIR)
+    maskdir = os.path.join(args['outputdir'], MASK_DIR)
     try:
         _mkdir_p(maskdir)
         _status("BIDS sub-directory for masks was successfully created at "
@@ -1350,7 +1373,7 @@ def single_echo_analysis(args):
     except:
         _status("WARNING: BIDS sub-directory for masks could not be created. "
                 "Masks will be saved into the subject directory.", args)
-        args['maskdir'] = args['id']
+        args['maskdir'] = args['outputdir']
 
     # Erode bias-corrected brain-extracted structural image (img) and save into
     # the BIDS directory for masks.
@@ -1514,7 +1537,7 @@ def single_echo_analysis(args):
     cardiac_map[cardiac_map < 0] = 0
 
     # Save both the respiratory map and the cardiac map
-    targetdir = os.path.join(args['id'], RESULTS_DIR)
+    targetdir = os.path.join(args['outputdir'], RESULTS_DIR)
     if not os.path.isdir(targetdir):
         _mkdir_p(targetdir)
     args['resultsdir'] = targetdir
@@ -1661,7 +1684,7 @@ def prepare_multi_echo(args):
         _status("WARNING: The number of volumes in the multi-echo functional "
                 "image is not a multiple of the number of echos, as specified "
                 "in the acquisition timing descriptor file.", args)
-    targetdir = os.path.join(args['id'], FUNC_DIR)
+    targetdir = os.path.join(args['outputdir'], FUNC_DIR)
     if not os.path.isdir(targetdir):
         _mkdir_p(targetdir)
 
@@ -1896,7 +1919,7 @@ def multi_echo_analysis(args):
     # Check whether enough data is available.
 
     # Set output directory
-    targetdir = os.path.join(args['id'], RESULTS_DIR)
+    targetdir = os.path.join(args['outputdir'], RESULTS_DIR)
     if not os.path.isdir(targetdir):
         _mkdir_p(targetdir)
 

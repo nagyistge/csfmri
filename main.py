@@ -89,6 +89,7 @@ Prerequisite:
 # Command-line arguments
 CLFLAGS = {'id':            '-id',
            'bids_dirs':     '-dir',
+           'outputdir':     '-outputdir',
            'struct':        '-t1',
            'anatdir':       '-anat',
            'single_echo':   '-se',
@@ -123,9 +124,9 @@ EXPLICIT_ARGS = {"bids_dirs"}
 
 # Arguments by type
 # FIXME: This could be done more elegantly.
-STRING_ARGS = {"id", "bids_dirs", "struct", "anatdir", "single_echo", "sref",
-               "stime", "sfeat", "sbio", "multi_echo", "mref", "mtime", "mbio",
-               "fmap", "fmag", "fphase", "log"}
+STRING_ARGS = {"id", "bids_dirs", "outputdir", "struct", "anatdir",
+               "single_echo", "sref", "stime", "sfeat", "sbio", "multi_echo",
+               "mref", "mtime", "mbio", "fmap", "fmag", "fphase", "log"}
 FLOAT_ARGS = {"sfmin", "spval", "sconv", "echodiff", "fractint", "sfreq"}
 INT_ARGS = {"cseg", "cpu"}
 BOOL_ARGS = {"copy", "auto", "verbose"}
@@ -134,6 +135,7 @@ BOOL_ARGS = {"copy", "auto", "verbose"}
 ARG_DEFAULTS = {
            'id':            os.getcwd(),
            'bids_dirs':     {'anat', 'func', 'fmap', 'masks', 'orig', 'result'},
+           'outputdir':     "",
            'sfmin':         0.2,
            'spval':         0.05,
            'sconv':         0.1,
@@ -387,6 +389,9 @@ def task_selector(args):
     # Load FSL
     tasks['load_fsl'] = True
 
+    # Set output directory
+    tasks['set_outputdir'] = True
+
     # Create BIDS directories
     reqs = {"id", "bids_dirs"}
     tasks['create_bids_dirs'] = check_requirements(reqs, args)
@@ -638,12 +643,11 @@ def summarize(args):
 
 
 def main():
-    """Main program code. Operates through 5 steps:
+    """Main program code. Operates through 4 steps:
         I. Read and validate input
         II. Summarize task and ask for user confirmation
         III. Perform analysis steps
-        IV. Create output
-        V. Report results"""
+        IV. Conclude run"""
 
     # I. Read and validate input
     try:
@@ -699,9 +703,8 @@ def main():
                         .format(str(task), i, current_args['id']), current_args)
                     continue
 
-    # IV. Create output
-
-    # V. Report results
+    # IV. CONCLUDE RUN
+    # FIXME: Add checksum for errors.
     print ("All tasks have been successfully completed.")
 
 
