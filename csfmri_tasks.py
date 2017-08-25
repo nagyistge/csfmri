@@ -622,6 +622,12 @@ def load_fsl(args):
 
 def set_outputdir(args):
     """Adds the optionally specified output subdirectory to the output path."""
+
+    # Ensure compatibility with vector input
+    if type(args['outputdir']) is not list:
+        args['outputdir'] = [args['outputdir']]
+
+    # Set output directory
     try:
         if args['outputdir'][0] is not None:
             outputdir = str(args['outputdir'][0])
