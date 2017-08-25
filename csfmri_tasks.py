@@ -120,6 +120,8 @@ CARDMAP_TAG = "_cardmap.nii.gz"
 RESPMAP_TAG = "_respmap.nii.gz"
 PHASEMAP_TAG = "_phasemap.nii.gz"
 
+FPHASE_ECHO_DIFF = 2.46     # [ms]  typical for our SIEMENS 3T PRISMA scanner
+
 # Other built-in constants
 # Number of zero-slices used to pad each z-end of the NIfTI volumes
 N_PAD_SLICES = 2
@@ -722,7 +724,7 @@ def create_field_map(args):
               'SIEMENS', args['fphase'],
               args['fmag_brain'],
               os.path.join(targetdir, str(args['label'])) + FMAP_TAG,
-              str(args['echodiff'])]
+              str(FPHASE_ECHO_DIFF)]
     try:
         _run(fpfcmd, args, bg=False)
     except NothingDoneException:
