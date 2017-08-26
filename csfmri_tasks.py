@@ -1662,7 +1662,7 @@ def prepare_multi_echo(args):
             mimg = nib.load(args['multi_echo_pad'])
             hdr = mimg.header
             mimg = mimg.get_data()
-            hdr.set_data_dtype(migm.dtype)
+            hdr.set_data_dtype(mimg.dtype)
             args['mhdr'] = copy.deepcopy(hdr)
         except:
             msg = "The padded multi-echo functional image could not be " \
