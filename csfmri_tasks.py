@@ -390,6 +390,7 @@ def _pad(imgpath, n_slices=2):
     hdr.set_data_shape(img_shape)
     # Manipulate image content
     img = img.get_data()
+    hdr.set_data_dtype(img.dtype)
     zero_shape = img_shape
     zero_shape[2] = 2
     zeroslices = np.zeros(img_shape)
@@ -397,7 +398,7 @@ def _pad(imgpath, n_slices=2):
     img = da.concatenate([zeroslices, img, zeroslices], axis=2)
 
     # Return NIfTI image
-    return nib.Nifti1Image(img, hdr.get_sform(), hdr)
+    return nib.Nifti2Image(img, hdr.get_sform(), hdr)
 
 
 def _parse_timing_file(timing_file, args):
@@ -1550,11 +1551,12 @@ def single_echo_analysis(args):
     brain_mask = \
         os.path.join(args['maskdir'], struct_base_name + "2func.nii.gz")
     hdr = nib.load(brain_mask).header
+    hdr.set_data_dtype(np.float64)
 
     cardmap_path = \
         os.path.join(args['resultsdir'], args['label'] + CARDMAP_TAG)
     try:
-        nib.save(nib.Nifti1Image(cardiac_map, hdr.get_sform(), hdr),
+        nib.save(nib.Nifti2Image(cardiac_map, hdr.get_sform(), hdr),
                  cardmap_path)
         _status("SUCCESS: The cardiac map was successfully saved to '{}'."
                 .format(cardmap_path), args)
@@ -1567,7 +1569,7 @@ def single_echo_analysis(args):
     respmap_path = \
         os.path.join(args['resultsdir'], args['label'] + RESPMAP_TAG)
     try:
-        nib.save(nib.Nifti1Image(respiratory_map, hdr.get_sform(), hdr),
+        nib.save(nib.Nifti2Image(respiratory_map, hdr.get_sform(), hdr),
                  respmap_path)
         _status("SUCCESS: The respiratory map was successfully saved to '{}'."
                 .format(respmap_path), args)
@@ -1624,7 +1626,7 @@ def single_echo_analysis(args):
     try:
         phasemap_path = \
             os.path.join(args['resultsdir'], args['label'] + PHASEMAP_TAG)
-        nib.save(nib.Nifti1Image(phase_map, hdr.get_sform(), hdr),
+        nib.save(nib.Nifti2Image(phase_map, hdr.get_sform(), hdr),
                  phasemap_path)
         _status("SUCCESS: The phase map was successfully saved to '{}'."
                 .format(phasemap_path), args)
@@ -1659,8 +1661,9 @@ def prepare_multi_echo(args):
         try:
             mimg = nib.load(args['multi_echo_pad'])
             hdr = mimg.header
-            args['mhdr'] = copy.deepcopy(hdr)
             mimg = mimg.get_data()
+            hdr.set_data_dtype(migm.dtype)
+            args['mhdr'] = copy.deepcopy(hdr)
         except:
             msg = "The padded multi-echo functional image could not be " \
                   "loaded from '{}'.".format(args['multi_echo_pad'])
@@ -1714,7 +1717,7 @@ def prepare_multi_echo(args):
             hdr.set_data_shape(current_echo_series.shape)
             # Save the current echo into file
             try:
-                nib.save(nib.Nifti1Image(current_echo_series, hdr.get_sform(),
+                nib.save(nib.Nifti2Image(current_echo_series, hdr.get_sform(),
                                          hdr), echo_name)
                 _status("SUCCESS: Echo No. {}. file was successfully saved to "
                         "'{}'".format(i, echo_name), args)
@@ -1900,9 +1903,8 @@ def multi_echo_analysis(args):
 
     # Create an array that stores the echo signals' coincidence with cardiac
     # cycle segments.
-    all_echos_segmented = \
-        np.zeros(echos_shape[:3] + (echos_shape[3],) + (echos_shape[-1],))
-    all_echotrains_segmented = np.zeros(echos_shape[:3] + (echos_shape[3],))
+    all_echos_segmented = np.zeros(echos_shape)
+    all_echotrains_segmented = np.zeros(echos_shape[:-1])
 
     for repeat_no in range(SS, echos_shape[-2]):
         # Calculate the segments for individual echos
@@ -1910,7 +1912,7 @@ def multi_echo_analysis(args):
             index_base = (TE[echo_no] + (repeat_no-SS) * TR) \
                          * samples_per_ms
             for slice_no in range(echos_shape[2]):
-                index = int(round(index_base + ST[slice_no]))
+                index = int(round(index_base + ST[slice_no] * samples_per_ms))
                 all_echos_segmented[:, :, slice_no, repeat_no, echo_no] \
                     = card_segment_mask[index]
 
@@ -1918,7 +1920,7 @@ def multi_echo_analysis(args):
         index_base = \
             (TE[0] + np.mean(TE) + (repeat_no-SS) * TR) * samples_per_ms
         for slice_no in range(echos_shape[2]):
-            index = int(round(index_base + ST[slice_no]))
+            index = int(round(index_base + ST[slice_no] * samples_per_ms))
             all_echotrains_segmented[:, :, slice_no, repeat_no] = \
                 card_segment_mask[index]
 
@@ -1933,6 +1935,13 @@ def multi_echo_analysis(args):
     stat_shape = echos_shape[:3] + (args['cseg'],)
     hdr_stat = copy.deepcopy(args['mhdr'])
     hdr_stat.set_data_shape(stat_shape)
+    # Adjust the data type descriptor in the header
+    # After a day-long search for this bug, it turned out that the copied header
+    # had had its dtype set to INT16, which resulted in the 16-bit re-binning of
+    # data with minuscule differences and huge outliers, and casting all true
+    # datapoints into a single bin. Very confusingly, the bins appeared as
+    # floting-point-type but they were really just discrete values.
+    hdr_stat.set_data_dtype(np.float64)
 
     # Calculate mean signal intensity and standard deviation for each cardiac
     # cycle segment.
@@ -1943,14 +1952,14 @@ def multi_echo_analysis(args):
 
         # Calculate the statistics
         for segment_no in range(args['cseg']):
-            coords = np.where(all_echos_segmented[:, :, :, :, echo_no] ==
-                              segment_no + 1)
+            coords = np.where(all_echos_segmented[:, :, :, :, echo_no]
+                              .astype(np.int64) == segment_no + 1)
             tmp = np.full(echos_shape[:-1], np.nan)
             tmp[coords] = all_echos[coords + (echo_no,)]
             mean_signal_by_segment[coords[:3] + (segment_no,)] \
-                = np.nanmean(tmp, axis=-1)[coords[:3]]
+                = np.nan_to_num(np.nanmean(tmp, axis=-1))[coords[:3]]
             tmp2 = \
-                np.nanstd(tmp, axis=-1) / \
+                np.nan_to_num(np.nanstd(tmp, axis=-1)) / \
                 np.sqrt(np.count_nonzero(~np.isnan(tmp), axis=-1))
             del tmp
             stderr_signal_by_segment[coords[:3] + (segment_no,)] = \
@@ -1962,7 +1971,7 @@ def multi_echo_analysis(args):
             fname = os.path.join(targetdir, args['label'] +
                                  "_echo{:d}_segment_mean.nii.gz"
                                  .format(echo_no))
-            nib.save(nib.Nifti1Image(mean_signal_by_segment,
+            nib.save(nib.Nifti2Image(mean_signal_by_segment,
                                      hdr_stat.get_sform(), hdr_stat), fname)
             _status("SUCCESS: An image of cardiac segment-specific mean "
                     "signals for Echo No. {}. was successfully saved to '{}'."
@@ -1979,7 +1988,7 @@ def multi_echo_analysis(args):
             fname = os.path.join(targetdir, args['label'] +
                                  "_echo{:d}_segment_stderr.nii.gz"
                                  .format(echo_no))
-            nib.save(nib.Nifti1Image(stderr_signal_by_segment,
+            nib.save(nib.Nifti2Image(stderr_signal_by_segment,
                                      hdr_stat.get_sform(), hdr_stat), fname)
             _status("SUCCESS: An image of cardiac segment-specific standard "
                     "errors of the mean signal for Echo No. {}. was "
@@ -1991,6 +2000,10 @@ def multi_echo_analysis(args):
             # Try to save as many as possible
             pass
 
+    # Release memory
+    del all_echos
+    del all_echos_segmented
+
     # Calculate mean S0 and mean T2* per cardiac cycle segment and calculate
     # their respective standard errors.
     mean_S0_per_segment = np.zeros(stat_shape)
@@ -1999,7 +2012,8 @@ def multi_echo_analysis(args):
     stderr_T2star_per_segment = np.zeros(stat_shape)
 
     for segment_no in range(args['cseg']):
-        coords = np.where(all_echotrains_segmented == segment_no + 1)
+        coords = np.where(all_echotrains_segmented.astype(np.int64)
+                          == segment_no + 1)
         tmp = np.full(echos_shape[:-1], np.nan)
         tmp[coords] = S0[coords]
         mean_S0_per_segment[coords[:3] + (segment_no,)] = \
@@ -2010,24 +2024,24 @@ def multi_echo_analysis(args):
         del tmp
         stderr_S0_per_segment[coords[:3] + (segment_no,)] = tmp2[coords[:3]]
         del tmp2
-        tmp = np.full(echos_shape[:-1], np.nan)
-        tmp[coords] = T2star[coords]
-        tmp[tmp < 0] = np.nan
-        tmp[np.isinf(tmp)] = np.nan
+        tmp3 = np.full(echos_shape[:-1], np.nan)
+        tmp3[coords] = T2star[coords]
+        tmp3[tmp3 < 0] = np.nan
+        tmp3[np.isinf(tmp3)] = np.nan
         mean_T2star_per_segment[coords[:3] + (segment_no,)] = \
-            np.nanmean(tmp, axis=-1)[coords[:3]]
-        tmp2 = \
-            np.nanstd(tmp, axis=-1) / \
-            np.sqrt(np.count_nonzero(~np.isnan(tmp), axis=-1))
-        del tmp
-        stderr_T2star_per_segment[coords[:3] + (segment_no,)] = tmp2[coords[:3]]
-        del tmp2
+            np.nan_to_num(np.nanmean(tmp3, axis=-1))[coords[:3]]
+        tmp4 = \
+            np.nan_to_num(np.nanstd(tmp3, axis=-1)) / \
+            np.sqrt(np.count_nonzero(~np.isnan(tmp3), axis=-1))
+        del tmp3
+        stderr_T2star_per_segment[coords[:3] + (segment_no,)] = tmp4[coords[:3]]
+        del tmp4
 
     # Save the segment-specific MEAN S0 map
     try:
         fname = os.path.join(targetdir, args['label'] +
                              "_S0_segment_mean.nii.gz")
-        nib.save(nib.Nifti1Image(mean_S0_per_segment, hdr_stat.get_sform(),
+        nib.save(nib.Nifti2Image(mean_S0_per_segment, hdr_stat.get_sform(),
                                  hdr_stat), fname)
         _status("SUCCESS: An image of cardiac segment-specific mean S0 values "
                 "was successfully saved to '{}'.".format(fname), args)
@@ -2041,7 +2055,7 @@ def multi_echo_analysis(args):
     try:
         fname = os.path.join(targetdir, args['label'] +
                              "_S0_segment_stderr.nii.gz")
-        nib.save(nib.Nifti1Image(stderr_S0_per_segment, hdr_stat.get_sform(),
+        nib.save(nib.Nifti2Image(stderr_S0_per_segment, hdr_stat.get_sform(),
                                  hdr_stat), fname)
         _status("SUCCESS: An image of the standard errors of cardiac "
                 "segment-specific mean S0 values was successfully saved to "
@@ -2057,7 +2071,7 @@ def multi_echo_analysis(args):
     try:
         fname = os.path.join(targetdir, args['label'] +
                              "_T2star_segment_mean.nii.gz")
-        nib.save(nib.Nifti1Image(mean_T2star_per_segment, hdr_stat.get_sform(),
+        nib.save(nib.Nifti2Image(mean_T2star_per_segment, hdr_stat.get_sform(),
                                  hdr_stat), fname)
         _status("SUCCESS: An image of cardiac segment-specific mean T2* values "
                 "was successfully saved to '{}'.".format(fname), args)
@@ -2071,7 +2085,7 @@ def multi_echo_analysis(args):
     try:
         fname = os.path.join(targetdir, args['label'] +
                              "_T2star_segment_stderr.nii.gz")
-        nib.save(nib.Nifti1Image(stderr_T2star_per_segment,
+        nib.save(nib.Nifti2Image(stderr_T2star_per_segment,
                                  hdr_stat.get_sform(), hdr_stat), fname)
         _status("SUCCESS: An image of the standard errors of cardiac "
                 "segment-specific mean T2* values was successfully saved to "
