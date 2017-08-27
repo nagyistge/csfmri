@@ -391,7 +391,7 @@ def _pad(imgpath, n_slices=2):
     # Manipulate image content
     img = img.get_data()
     hdr.set_data_dtype(img.dtype)
-    hdr.sizeof_hdr = 540    #   NIfTI-2 format requirement.
+    hdr.sizeof_hdr = 348    #   NIfTI-1 format requirement.
     zero_shape = img_shape
     zero_shape[2] = 2
     zeroslices = np.zeros(img_shape)
@@ -399,7 +399,7 @@ def _pad(imgpath, n_slices=2):
     img = da.concatenate([zeroslices, img, zeroslices], axis=2)
 
     # Return NIfTI image
-    return nib.Nifti2Image(img, hdr.get_sform(), hdr)
+    return nib.Nifti1Image(img, hdr.get_sform(), hdr)
 
 
 def _parse_timing_file(timing_file, args):
@@ -1552,13 +1552,13 @@ def single_echo_analysis(args):
     brain_mask = \
         os.path.join(args['maskdir'], struct_base_name + "2func.nii.gz")
     hdr = nib.load(brain_mask).header
-    hdr.set_data_dtype(np.float64)
-    hdr.sizeof_hdr = 540  # NIfTI-2 format requirement.
+    hdr.set_data_dtype(np.float32)
+    hdr.sizeof_hdr = 348  # NIfTI-1 format requirement.
 
     cardmap_path = \
         os.path.join(args['resultsdir'], args['label'] + CARDMAP_TAG)
     try:
-        nib.save(nib.Nifti2Image(cardiac_map, hdr.get_sform(), hdr),
+        nib.save(nib.Nifti1Image(cardiac_map, hdr.get_sform(), hdr),
                  cardmap_path)
         _status("SUCCESS: The cardiac map was successfully saved to '{}'."
                 .format(cardmap_path), args)
@@ -1571,7 +1571,7 @@ def single_echo_analysis(args):
     respmap_path = \
         os.path.join(args['resultsdir'], args['label'] + RESPMAP_TAG)
     try:
-        nib.save(nib.Nifti2Image(respiratory_map, hdr.get_sform(), hdr),
+        nib.save(nib.Nifti1Image(respiratory_map, hdr.get_sform(), hdr),
                  respmap_path)
         _status("SUCCESS: The respiratory map was successfully saved to '{}'."
                 .format(respmap_path), args)
@@ -1628,7 +1628,7 @@ def single_echo_analysis(args):
     try:
         phasemap_path = \
             os.path.join(args['resultsdir'], args['label'] + PHASEMAP_TAG)
-        nib.save(nib.Nifti2Image(phase_map, hdr.get_sform(), hdr),
+        nib.save(nib.Nifti1Image(phase_map, hdr.get_sform(), hdr),
                  phasemap_path)
         _status("SUCCESS: The phase map was successfully saved to '{}'."
                 .format(phasemap_path), args)
@@ -1665,7 +1665,7 @@ def prepare_multi_echo(args):
             hdr = mimg.header
             mimg = mimg.get_data()
             hdr.set_data_dtype(mimg.dtype)
-            hdr.sizeof_hdr = 540  # NIfTI-2 format requirement.
+            hdr.sizeof_hdr = 348  # NIfTI-1 format requirement.
             args['mhdr'] = copy.deepcopy(hdr)
         except:
             msg = "The padded multi-echo functional image could not be " \
@@ -1720,7 +1720,7 @@ def prepare_multi_echo(args):
             hdr.set_data_shape(current_echo_series.shape)
             # Save the current echo into file
             try:
-                nib.save(nib.Nifti2Image(current_echo_series, hdr.get_sform(),
+                nib.save(nib.Nifti1Image(current_echo_series, hdr.get_sform(),
                                          hdr), echo_name)
                 _status("SUCCESS: Echo No. {}. file was successfully saved to "
                         "'{}'".format(i, echo_name), args)
@@ -1944,8 +1944,8 @@ def multi_echo_analysis(args):
     # data with minuscule differences and huge outliers, and casting all true
     # datapoints into a single bin. Very confusingly, the bins appeared as
     # floting-point-type but they were really just discrete values.
-    hdr_stat.set_data_dtype(np.float64)
-    hdr_stat.sizeof_hdr = 540  # NIfTI-2 format requirement.
+    hdr_stat.set_data_dtype(np.float32)
+    hdr_stat.sizeof_hdr = 348  # NIfTI-1 format requirement.
 
     # Calculate mean signal intensity and standard deviation for each cardiac
     # cycle segment.
@@ -1975,7 +1975,7 @@ def multi_echo_analysis(args):
             fname = os.path.join(targetdir, args['label'] +
                                  "_echo{:d}_segment_mean.nii.gz"
                                  .format(echo_no))
-            nib.save(nib.Nifti2Image(mean_signal_by_segment,
+            nib.save(nib.Nifti1Image(mean_signal_by_segment,
                                      hdr_stat.get_sform(), hdr_stat), fname)
             _status("SUCCESS: An image of cardiac segment-specific mean "
                     "signals for Echo No. {}. was successfully saved to '{}'."
@@ -1992,7 +1992,7 @@ def multi_echo_analysis(args):
             fname = os.path.join(targetdir, args['label'] +
                                  "_echo{:d}_segment_stderr.nii.gz"
                                  .format(echo_no))
-            nib.save(nib.Nifti2Image(stderr_signal_by_segment,
+            nib.save(nib.Nifti1Image(stderr_signal_by_segment,
                                      hdr_stat.get_sform(), hdr_stat), fname)
             _status("SUCCESS: An image of cardiac segment-specific standard "
                     "errors of the mean signal for Echo No. {}. was "
@@ -2045,7 +2045,7 @@ def multi_echo_analysis(args):
     try:
         fname = os.path.join(targetdir, args['label'] +
                              "_S0_segment_mean.nii.gz")
-        nib.save(nib.Nifti2Image(mean_S0_per_segment, hdr_stat.get_sform(),
+        nib.save(nib.Nifti1Image(mean_S0_per_segment, hdr_stat.get_sform(),
                                  hdr_stat), fname)
         _status("SUCCESS: An image of cardiac segment-specific mean S0 values "
                 "was successfully saved to '{}'.".format(fname), args)
@@ -2059,7 +2059,7 @@ def multi_echo_analysis(args):
     try:
         fname = os.path.join(targetdir, args['label'] +
                              "_S0_segment_stderr.nii.gz")
-        nib.save(nib.Nifti2Image(stderr_S0_per_segment, hdr_stat.get_sform(),
+        nib.save(nib.Nifti1Image(stderr_S0_per_segment, hdr_stat.get_sform(),
                                  hdr_stat), fname)
         _status("SUCCESS: An image of the standard errors of cardiac "
                 "segment-specific mean S0 values was successfully saved to "
@@ -2075,7 +2075,7 @@ def multi_echo_analysis(args):
     try:
         fname = os.path.join(targetdir, args['label'] +
                              "_T2star_segment_mean.nii.gz")
-        nib.save(nib.Nifti2Image(mean_T2star_per_segment, hdr_stat.get_sform(),
+        nib.save(nib.Nifti1Image(mean_T2star_per_segment, hdr_stat.get_sform(),
                                  hdr_stat), fname)
         _status("SUCCESS: An image of cardiac segment-specific mean T2* values "
                 "was successfully saved to '{}'.".format(fname), args)
@@ -2089,7 +2089,7 @@ def multi_echo_analysis(args):
     try:
         fname = os.path.join(targetdir, args['label'] +
                              "_T2star_segment_stderr.nii.gz")
-        nib.save(nib.Nifti2Image(stderr_T2star_per_segment,
+        nib.save(nib.Nifti1Image(stderr_T2star_per_segment,
                                  hdr_stat.get_sform(), hdr_stat), fname)
         _status("SUCCESS: An image of the standard errors of cardiac "
                 "segment-specific mean T2* values was successfully saved to "
