@@ -391,6 +391,7 @@ def _pad(imgpath, n_slices=2):
     # Manipulate image content
     img = img.get_data()
     hdr.set_data_dtype(img.dtype)
+    hdr.sizeof_hdr = 540    #   NIfTI-2 format requirement.
     zero_shape = img_shape
     zero_shape[2] = 2
     zeroslices = np.zeros(img_shape)
@@ -1552,6 +1553,7 @@ def single_echo_analysis(args):
         os.path.join(args['maskdir'], struct_base_name + "2func.nii.gz")
     hdr = nib.load(brain_mask).header
     hdr.set_data_dtype(np.float64)
+    hdr.sizeof_hdr = 540  # NIfTI-2 format requirement.
 
     cardmap_path = \
         os.path.join(args['resultsdir'], args['label'] + CARDMAP_TAG)
@@ -1663,6 +1665,7 @@ def prepare_multi_echo(args):
             hdr = mimg.header
             mimg = mimg.get_data()
             hdr.set_data_dtype(mimg.dtype)
+            hdr.sizeof_hdr = 540  # NIfTI-2 format requirement.
             args['mhdr'] = copy.deepcopy(hdr)
         except:
             msg = "The padded multi-echo functional image could not be " \
@@ -1942,6 +1945,7 @@ def multi_echo_analysis(args):
     # datapoints into a single bin. Very confusingly, the bins appeared as
     # floting-point-type but they were really just discrete values.
     hdr_stat.set_data_dtype(np.float64)
+    hdr_stat.sizeof_hdr = 540  # NIfTI-2 format requirement.
 
     # Calculate mean signal intensity and standard deviation for each cardiac
     # cycle segment.
