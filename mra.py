@@ -18,6 +18,11 @@ create an MR Angiogram (MRA). The algorithm used is the GMM + MRF. It requires
 a bias-field corrected image. Please use fsl_anat to remove the receiver bias 
 field from the images."""
 
+# This module implements the algorithm originally described in:
+# Yun Tian, Qingli Chen, Wei Wang, et al., “A Vessel Active Contour Model for
+# Vascular Segmentation,” BioMed Research International, vol. 2014, Article ID
+# 106490, 15 pages, 2014. doi:10.1155/2014/106490
+
 
 # DEFINITIONS AND CODE
 
