@@ -1419,7 +1419,7 @@ def single_echo_analysis(args):
     func2st_warp = os.path.join(
         args['sfeat'], "reg/example_func2highres_warp.nii.gz")
     st2func_warp = os.path.join(
-        args['sfeat'], "reg/highres2example_func.nii.gz")
+        args['sfeat'], "reg/highres2example_func_warp.nii.gz")
     invwarpcmd = [os.path.join(args['fsldir'], "bin/invwarp"), "-w",
                   func2st_warp, "-o", st2func_warp, "-r", func]
     try:
